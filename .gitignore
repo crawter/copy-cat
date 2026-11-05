@@ -1,0 +1,12 @@
+# Built binaries
+/copycat
+/copycat.exe
+
+# cgo build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+_cgo_export.h
+_cgo_gotypes.go
