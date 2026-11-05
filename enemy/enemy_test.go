@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"copycat/collide"
 	"copycat/leveldata"
 	"copycat/move"
 )
@@ -206,5 +207,69 @@ func TestBodyBoxMatchesAssumedSizes(t *testing.T) {
 	}
 	if got.Height != bodyHeightMeters {
 		t.Fatalf("Body Height = %v, want %v", got.Height, bodyHeightMeters)
+	}
+}
+
+// TestJumpedApproachDefeatsWithoutCraneHit replays the main loop's frame order
+// — step hero, step crane, Defeat, then collide.Check with an off-corridor
+// body once defeated — over the normal jumped approach. It fails on any
+// EventCraneHit before or after the defeat, and if the defeat never lands
+// within 120 frames. With the old 0.7-meter body the approach clips the body
+// in both patrol phases; with 0.4 meters it clears.
+func TestJumpedApproachDefeatsWithoutCraneHit(t *testing.T) {
+	const dt = 1.0 / 60.0
+	take := leveldata.Take9()
+
+	outbound := New(take.Track)
+	inbound := New(take.Track)
+	inbound.pos.Z = inbound.highZ
+	inbound.dir = -1
+
+	tests := []struct {
+		name string
+		c    Crane
+	}{
+		{name: "outbound", c: outbound},
+		{name: "inbound", c: inbound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := tt.c
+			h := move.NewHero()
+			h.Z = c.pos.Z - 5.5
+
+			defeated := false
+			for frame := 0; frame < 120; frame++ {
+				in := move.Input{Jump: frame == 0}
+				switch {
+				case h.X < c.pos.X:
+					in.Steer = 1
+				case h.X > c.pos.X:
+					in.Steer = -1
+				}
+
+				h = move.Step(h, in, dt)
+				c = Step(c, dt)
+				c, _ = Defeat(h, c)
+
+				body := c.Body()
+				if c.Dropped() {
+					defeated = true
+					body.Pos = leveldata.Point{X: 0, Y: 0, Z: -1000}
+				}
+
+				_, events := collide.Check(h, take, body)
+				for _, ev := range events {
+					if ev.Kind == collide.EventCraneHit {
+						t.Fatalf("frame %d: jumped approach hit the crane body, want none", frame)
+					}
+				}
+			}
+
+			if !defeated {
+				t.Fatal("crane never defeated within 120 frames on the jumped approach")
+			}
+		})
 	}
 }

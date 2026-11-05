@@ -13,7 +13,7 @@ import (
 
 // The crane rolls along Z at four meters a second between the track's two
 // ends. The rolling body is a box of half-length 1.5 m, half-width 1.0 m and
-// height 0.7 m. The counterweight is a box of half-extent 0.6 m centered on
+// height 0.4 m. The counterweight is a box of half-extent 0.6 m centered on
 // top of the body, its bottom at the body's top. The hero's box is the same
 // size collide uses: half-width 0.4 m, half-height 0.3 m and half-depth 0.3 m.
 const (
@@ -21,7 +21,7 @@ const (
 
 	bodyHalfLenMeters   = 1.5
 	bodyHalfWidthMeters = 1.0
-	bodyHeightMeters    = 0.7
+	bodyHeightMeters    = 0.4
 
 	counterweightHalfMeters = 0.6
 
