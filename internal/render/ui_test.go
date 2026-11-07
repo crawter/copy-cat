@@ -1,0 +1,473 @@
+package render
+
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+
+	"copycat/internal/campaign"
+	"copycat/internal/gameplay"
+	"copycat/internal/levelgen"
+	"copycat/internal/runner"
+)
+
+const testDT = 1.0 / 60.0
+
+func TestMenuLinesEverySceneYieldsLines(t *testing.T) {
+	cases := []struct {
+		name string
+		flow func(t *testing.T) *campaign.Flow
+	}{
+		{
+			name: "language pick",
+			flow: func(t *testing.T) *campaign.Flow {
+				return campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), true)
+			},
+		},
+		{
+			name: "main menu",
+			flow: func(t *testing.T) *campaign.Flow {
+				return campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+			},
+		},
+		{
+			name: "map",
+			flow: func(t *testing.T) *campaign.Flow {
+				return mapFlow(t)
+			},
+		},
+		{
+			name: "settings",
+			flow: func(t *testing.T) *campaign.Flow {
+				return settingsFlow(t)
+			},
+		},
+		{
+			name: "pause",
+			flow: func(t *testing.T) *campaign.Flow {
+				f := newGameFlow(t)
+				f.Handle(campaign.ActionPause)
+				return f
+			},
+		},
+		{
+			name: "level end",
+			flow: func(t *testing.T) *campaign.Flow {
+				f := newGameFlow(t)
+				stepToScene(t, f, campaign.SceneLevelEnd)
+				return f
+			},
+		},
+		{
+			name: "game over",
+			flow: func(t *testing.T) *campaign.Flow {
+				return gameOverFlow(t)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := MenuLines(tc.flow(t))
+			if len(lines) == 0 {
+				t.Fatal("MenuLines returned no lines")
+			}
+			for _, l := range lines {
+				if l.Text == "" {
+					t.Fatal("MenuLines returned an empty line")
+				}
+			}
+		})
+	}
+}
+
+func TestMenuLinesLanguageDiffers(t *testing.T) {
+	c := campaign.Default()
+	en := campaign.NewFlow(c, campaign.DefaultSettings(), campaign.NewProgress(), false)
+	ua := campaign.NewFlow(c, ukrainianSettings(), campaign.NewProgress(), false)
+
+	if got, want := joinLines(MenuLines(en)), joinLines(MenuLines(ua)); got == want {
+		t.Fatalf("EN and UA main menu lines are identical: %q", got)
+	}
+}
+
+func TestHighlightMatchesMenuIndex(t *testing.T) {
+	f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), true)
+	if got, want := highlighted(t, MenuLines(f)).Text, textFor(f, campaign.LanguageEnglishName); got != want {
+		t.Fatalf("language pick highlight = %q, want %q", got, want)
+	}
+	f.Handle(campaign.ActionDown)
+	if got, want := highlighted(t, MenuLines(f)).Text, textFor(f, campaign.LanguageUkrainianName); got != want {
+		t.Fatalf("language pick highlight after down = %q, want %q", got, want)
+	}
+
+	m := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	if got, want := highlighted(t, MenuLines(m)).Text, textFor(m, campaign.MainMenuItems[0]); got != want {
+		t.Fatalf("main menu highlight = %q, want %q", got, want)
+	}
+	m.Handle(campaign.ActionDown)
+	if got, want := highlighted(t, MenuLines(m)).Text, textFor(m, campaign.MainMenuItems[1]); got != want {
+		t.Fatalf("main menu highlight after down = %q, want %q", got, want)
+	}
+
+	s := settingsFlow(t)
+	if got := highlighted(t, MenuLines(s)).Text; !strings.Contains(got, textFor(s, campaign.SettingsItems[0])) {
+		t.Fatalf("settings highlight = %q, missing %q", got, textFor(s, campaign.SettingsItems[0]))
+	}
+	s.Handle(campaign.ActionDown)
+	if got := highlighted(t, MenuLines(s)).Text; !strings.Contains(got, textFor(s, campaign.SettingsItems[1])) {
+		t.Fatalf("settings highlight after down = %q, missing %q", got, textFor(s, campaign.SettingsItems[1]))
+	}
+
+	mp := mapFlow(t)
+	if got := highlighted(t, MenuLines(mp)).Text; !strings.Contains(got, textFor(mp, campaign.LevelNames[0])) {
+		t.Fatalf("map highlight = %q, missing %q", got, textFor(mp, campaign.LevelNames[0]))
+	}
+	mp.Handle(campaign.ActionDown)
+	if got := highlighted(t, MenuLines(mp)).Text; !strings.Contains(got, textFor(mp, campaign.LevelNames[1])) {
+		t.Fatalf("map highlight after down = %q, missing %q", got, textFor(mp, campaign.LevelNames[1]))
+	}
+
+	g := gameOverFlow(t)
+	if got, want := highlighted(t, MenuLines(g)).Text, textFor(g, campaign.GameOverItems[0]); got != want {
+		t.Fatalf("game over highlight = %q, want %q", got, want)
+	}
+	g.Handle(campaign.ActionDown)
+	if got, want := highlighted(t, MenuLines(g)).Text, textFor(g, campaign.GameOverItems[1]); got != want {
+		t.Fatalf("game over highlight after down = %q, want %q", got, want)
+	}
+}
+
+func TestGameOverCarriesRightEpitaph(t *testing.T) {
+	f := gameOverFlow(t)
+	if got := f.Run().Cause; got != gameplay.CausePit {
+		t.Fatalf("run cause = %v, want CausePit", got)
+	}
+	want := textFor(f, campaign.Epitaphs[gameplay.CausePit])
+	if !containsLine(MenuLines(f), want) {
+		t.Fatalf("game over lines missing epitaph %q", want)
+	}
+}
+
+func TestMapListsTenLevelsBossLast(t *testing.T) {
+	f := mapFlow(t)
+	lines := MenuLines(f)
+	if got, want := len(lines), 1+len(campaign.LevelNames); got != want {
+		t.Fatalf("map lines = %d, want %d", got, want)
+	}
+	for i, name := range campaign.LevelNames {
+		if got := lines[1+i].Text; !strings.Contains(got, textFor(f, name)) {
+			t.Fatalf("map line %d = %q, missing %q", i, got, textFor(f, name))
+		}
+	}
+	bossName := textFor(f, campaign.LevelNames[len(campaign.LevelNames)-1])
+	if got := lines[len(lines)-1].Text; !strings.Contains(got, bossName) {
+		t.Fatalf("boss is not the last map entry: %q", got)
+	}
+}
+
+func TestHUDCoversLivesCombsShield(t *testing.T) {
+	f := newGameFlow(t)
+	text := joinLines(HUDLines(f))
+	for _, want := range []string{
+		hudText(f, gameplay.HUDLives),
+		hudText(f, gameplay.HUDCombs),
+		hudText(f, gameplay.HUDShield),
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("HUD missing %q in %q", want, text)
+		}
+	}
+}
+
+func TestHUDBossCoversLivesAndPhase(t *testing.T) {
+	f := campaign.NewFlow(flatCampaign(), campaign.DefaultSettings(), campaign.Progress{Unlocked: 10}, false)
+	f.StartBoss()
+	if f.Scene() != campaign.ScenePlay || f.Boss() == nil {
+		t.Fatalf("boss not started: scene=%v boss=%v", f.Scene(), f.Boss())
+	}
+
+	text := joinLines(HUDLines(f))
+	for _, want := range []string{
+		hudText(f, gameplay.HUDLives),
+		textFor(f, uiPhase),
+		"1/3",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("boss HUD missing %q in %q", want, text)
+		}
+	}
+}
+
+func TestHUDCampaignShowsProgressEndlessShowsDistance(t *testing.T) {
+	f := newGameFlow(t)
+	text := joinLines(HUDLines(f))
+	if !strings.Contains(text, textFor(f, uiLevel)) {
+		t.Fatalf("campaign HUD missing level progress: %q", text)
+	}
+	if strings.Contains(text, hudText(f, gameplay.HUDDistance)) {
+		t.Fatalf("campaign HUD shows distance: %q", text)
+	}
+
+	e := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	e.StartEndless(7)
+	etext := joinLines(HUDLines(e))
+	if !strings.Contains(etext, hudText(e, gameplay.HUDDistance)) {
+		t.Fatalf("endless HUD missing distance: %q", etext)
+	}
+	if strings.Contains(etext, textFor(e, uiLevel)) {
+		t.Fatalf("endless HUD shows level progress: %q", etext)
+	}
+}
+
+func TestStoryEndingCreditsNonEmpty(t *testing.T) {
+	s := storyFlow(t)
+	if lines := StoryLines(s); len(lines) == 0 || lines[0].Text == "" {
+		t.Fatal("story lines are empty")
+	}
+
+	e := endingFlow(t)
+	if lines := StoryLines(e); len(lines) == 0 || lines[0].Text == "" {
+		t.Fatal("ending lines are empty")
+	}
+
+	c := creditsFlow(t)
+	lines := StoryLines(c)
+	if len(lines) < len(campaign.Credits)+1 {
+		t.Fatalf("credits lines = %d, want at least %d", len(lines), len(campaign.Credits)+1)
+	}
+	for _, l := range lines {
+		if l.Text == "" {
+			t.Fatal("credits contains an empty line")
+		}
+	}
+}
+
+func TestStoryLinesWrapLongParagraph(t *testing.T) {
+	f := storyFlow(t)
+	lines := StoryLines(f)
+	if len(lines) <= 1 {
+		t.Fatalf("story paragraph was not wrapped: %d lines", len(lines))
+	}
+	for i, l := range lines {
+		if n := utf8.RuneCountInString(l.Text); n > storyWrapChars {
+			t.Fatalf("line %d has %d runes, exceeds %d: %q", i, n, storyWrapChars, l.Text)
+		}
+	}
+}
+
+// --- helpers ---
+
+func ukrainianSettings() campaign.Settings {
+	s := campaign.DefaultSettings()
+	s.Language = campaign.LanguageUkrainian
+	return s
+}
+
+func flatCampaign() *campaign.Campaign {
+	c := campaign.Default()
+	p := levelgen.Params{BaseSpeed: 8, Length: 60}
+	for i := range c.Levels {
+		if c.Levels[i].Kind == campaign.LevelRun {
+			c.Levels[i].Params = p
+		}
+	}
+	return c
+}
+
+func newGameFlow(t *testing.T) *campaign.Flow {
+	t.Helper()
+	f := campaign.NewFlow(flatCampaign(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	f.Handle(campaign.ActionDown) // New Game
+	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.ScenePlay {
+		t.Fatalf("scene = %v, want ScenePlay", f.Scene())
+	}
+	return f
+}
+
+func settingsFlow(t *testing.T) *campaign.Flow {
+	t.Helper()
+	f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	for i := 0; i < 4; i++ {
+		f.Handle(campaign.ActionDown)
+	}
+	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.SceneSettings {
+		t.Fatalf("scene = %v, want SceneSettings", f.Scene())
+	}
+	return f
+}
+
+func mapFlow(t *testing.T) *campaign.Flow {
+	t.Helper()
+	f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	f.Handle(campaign.ActionDown)
+	f.Handle(campaign.ActionDown)
+	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.SceneMap {
+		t.Fatalf("scene = %v, want SceneMap", f.Scene())
+	}
+	return f
+}
+
+func gameOverFlow(t *testing.T) *campaign.Flow {
+	t.Helper()
+	c, pit := pitCampaign(t)
+	f := campaign.NewFlow(c, campaign.DefaultSettings(), campaign.NewProgress(), false)
+	f.Handle(campaign.ActionDown) // New Game
+	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.ScenePlay {
+		t.Fatalf("scene = %v, want ScenePlay", f.Scene())
+	}
+	r := f.Run()
+	r.Runner.Restart(pit.Z - 4)
+	r.Lives = 1
+	stepToScene(t, f, campaign.SceneGameOver)
+	return f
+}
+
+func storyFlow(t *testing.T) *campaign.Flow {
+	t.Helper()
+	f := campaign.NewFlow(flatCampaign(), campaign.DefaultSettings(), campaign.Progress{Unlocked: 3}, false)
+	f.StartLevel(3)
+	stepToScene(t, f, campaign.SceneLevelEnd)
+	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.SceneStory {
+		t.Fatalf("scene = %v, want SceneStory", f.Scene())
+	}
+	return f
+}
+
+func endingFlow(t *testing.T) *campaign.Flow {
+	t.Helper()
+	f := campaign.NewFlow(flatCampaign(), campaign.DefaultSettings(), campaign.Progress{Unlocked: 10}, false)
+	f.StartBoss()
+	winBoss(t, f)
+	if f.Scene() != campaign.SceneEnding {
+		t.Fatalf("scene = %v, want SceneEnding", f.Scene())
+	}
+	return f
+}
+
+func creditsFlow(t *testing.T) *campaign.Flow {
+	t.Helper()
+	f := endingFlow(t)
+	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.SceneCredits {
+		t.Fatalf("scene = %v, want SceneCredits", f.Scene())
+	}
+	return f
+}
+
+func pitCampaign(t *testing.T) (*campaign.Campaign, levelgen.Element) {
+	t.Helper()
+	p := levelgen.Params{BaseSpeed: 8, Length: 120, Density: 0.4}
+	for seed := uint64(0); seed < 200; seed++ {
+		l := levelgen.New(seed, p)
+		if pit, ok := firstPit(l); ok {
+			c := flatCampaign()
+			c.Levels[0] = campaign.LevelDef{ID: 1, World: 1, Index: 1, Kind: campaign.LevelRun, Seed: seed, Params: p}
+			return c, pit
+		}
+	}
+	t.Fatal("no pit found within 200 seeds")
+	return nil, levelgen.Element{}
+}
+
+func firstPit(l *levelgen.Level) (levelgen.Element, bool) {
+	for _, e := range l.Elements(0, l.Length()) {
+		if e.Kind == levelgen.Pit {
+			return e, true
+		}
+	}
+	return levelgen.Element{}, false
+}
+
+func stepToScene(t *testing.T, f *campaign.Flow, want campaign.Scene) {
+	t.Helper()
+	for i := 0; i < 5000 && f.Scene() != want; i++ {
+		f.StepRun(runner.Input{}, testDT)
+	}
+	if f.Scene() != want {
+		t.Fatalf("scene = %v, want %v", f.Scene(), want)
+	}
+}
+
+func winBoss(t *testing.T, f *campaign.Flow) {
+	t.Helper()
+	b := f.Boss()
+	if b == nil {
+		t.Fatal("no boss fight to win")
+	}
+	for i := 0; i < 4000 && b.State() == gameplay.BossFighting; i++ {
+		f.StepRun(bossWinningInput(b), testDT)
+	}
+	if b.State() != gameplay.BossWon {
+		t.Fatalf("boss state = %v, want BossWon", b.State())
+	}
+}
+
+func bossWinningInput(b *gameplay.BossFight) runner.Input {
+	if b.Vulnerable() {
+		var in runner.Input
+		switch {
+		case b.HeroLane() < b.AttackLane():
+			in.Right = true
+		case b.HeroLane() > b.AttackLane():
+			in.Left = true
+		default:
+			in.Jump = true
+		}
+		return in
+	}
+	return bossDodgeInput(b)
+}
+
+func bossDodgeInput(b *gameplay.BossFight) runner.Input {
+	var in runner.Input
+	switch {
+	case b.HeroLane() < b.AttackLane():
+		in.Right = true
+	case b.HeroLane() > b.AttackLane():
+		in.Left = true
+	default:
+		if b.AttackKind() == gameplay.AttackLow {
+			in.Jump = true
+		} else if !b.Jumping() {
+			in.Slide = true
+		}
+	}
+	return in
+}
+
+func highlighted(t *testing.T, lines []ScreenLine) ScreenLine {
+	t.Helper()
+	var out []ScreenLine
+	for _, l := range lines {
+		if l.Highlighted {
+			out = append(out, l)
+		}
+	}
+	if len(out) != 1 {
+		t.Fatalf("want exactly one highlighted line, got %d", len(out))
+	}
+	return out[0]
+}
+
+func joinLines(lines []ScreenLine) string {
+	var b strings.Builder
+	for _, l := range lines {
+		b.WriteString(l.Text)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func containsLine(lines []ScreenLine, text string) bool {
+	for _, l := range lines {
+		if l.Text == text {
+			return true
+		}
+	}
+	return false
+}
