@@ -14,13 +14,14 @@ import (
 func everyLine() []any {
 	return []any{
 		// internal/campaign.
-		campaign.GameTitle, campaign.MainMenuItems, campaign.MapTitle, campaign.MapLocked,
+		campaign.GameTitle, campaign.TitleTagline, campaign.MainMenuItems, campaign.MapTitle, campaign.MapLocked,
 		campaign.LevelNames, campaign.SettingsTitle, campaign.SettingsItems,
 		campaign.LanguagePickTitle, campaign.LanguageEnglishName, campaign.LanguageUkrainianName,
-		campaign.PauseTitle, campaign.PauseHint, campaign.LevelEndTitle, campaign.LevelEndHint,
+		campaign.PauseTitle, campaign.PauseHint, campaign.LevelEndTitle, campaign.LevelEndCombs,
+		campaign.LevelEndLivesLost, campaign.LevelEndStomps, campaign.LevelEndHint,
 		campaign.EndlessLevelEndTitle, campaign.GameOverTitle, campaign.GameOverEpitaph,
-		campaign.GameOverItems, campaign.StoryCards, campaign.LoadingTips, campaign.MedalsOfShame,
-		campaign.Epitaphs, campaign.Credits, campaign.CreditsClosing,
+		campaign.GameOverItems, campaign.KeyHints, campaign.StoryCards, campaign.LoadingTips,
+		campaign.MedalsOfShame, campaign.Epitaphs, campaign.Credits, campaign.CreditsClosing,
 		// internal/gameplay.
 		gameplay.CauseLines, gameplay.StompedMudskipper, gameplay.SnipLine, gameplay.ChaseLine,
 		gameplay.ShieldLine, gameplay.BossPhaseLines, gameplay.HUDCombs, gameplay.HUDLives,

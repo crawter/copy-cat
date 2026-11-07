@@ -11,7 +11,13 @@ type Line struct {
 }
 
 // GameTitle is the main menu's heading.
-var GameTitle = Line{EN: "Copycat", UA: "Copycat"}
+var GameTitle = Line{EN: "Hair Raid", UA: "Hair Raid"}
+
+// TitleTagline is the mocking line under the main menu's big logo.
+var TitleTagline = Line{
+	EN: "He's fast. His hair is faster. His excuses are fastest.",
+	UA: "Він швидкий. Зачіска швидша. Виправдання — найшвидші.",
+}
 
 // MainMenuItems holds the main menu entries in selection order.
 var MainMenuItems = []Line{
@@ -36,7 +42,7 @@ var LevelNames = []Line{
 	{EN: "Root Canal", UA: "Кореневий канал"},
 	{EN: "Gary's Neighborhood", UA: "Грицеве подвір'я"},
 	{EN: "Containers of Concern", UA: "Контейнери тривоги"},
-	{EN: "Gull Trouble", UA: "Чайкові клопоти"},
+	{EN: "Gull Trouble", UA: "Чаячі клопоти"},
 	{EN: "The Rat Race", UA: "Щурячі перегони"},
 	{EN: "Chairs on Wheels", UA: "Крісла на колесах"},
 	{EN: "Vacuums of Doom", UA: "Пилососи приреченості"},
@@ -72,8 +78,27 @@ var PauseTitle = Line{EN: "Paused", UA: "Пауза"}
 // PauseHint tells the player how to leave the pause screen.
 var PauseHint = Line{EN: "Press pause to resume", UA: "Натисніть паузу, щоб продовжити"}
 
+// KeyHints names each real control, in display order.
+var KeyHints = []Line{
+	{EN: "Arrows — switch lanes. The pits recommend it.", UA: "Стрілки — зміна смуги. Ями радять."},
+	{EN: "Up / Space / A — jump. Gravity approves.", UA: "Угору / Пробіл / A — стрибок. Гравітація схвалює."},
+	{EN: "Down / B — slide. The floor has been warned.", UA: "Униз / B — підкат. Підлогу попереджено."},
+	{EN: "P / Start — pause. Cowards welcome.", UA: "P / Start — пауза. Боягузам раді."},
+	{EN: "Q / Select — quit. The narrator saw this coming.", UA: "Q / Select — вихід. Оповідач це передбачав."},
+	{EN: "Esc / Backspace — back. Forward is overrated.", UA: "Esc / Backspace — назад. Уперед — переоцінено."},
+}
+
 // LevelEndTitle is the campaign level-end heading.
 var LevelEndTitle = Line{EN: "Level Complete", UA: "Рівень пройдено"}
+
+// LevelEndCombs labels the level-end comb counter.
+var LevelEndCombs = Line{EN: "Combs", UA: "Гребінці"}
+
+// LevelEndLivesLost labels the level-end lives-lost counter.
+var LevelEndLivesLost = Line{EN: "Lives lost", UA: "Втрачені життя"}
+
+// LevelEndStomps labels the level-end mudskipper-stomp counter.
+var LevelEndStomps = Line{EN: "Garys stomped", UA: "Розчавлено Гриців"}
 
 // LevelEndHint tells the player how to continue past the level end.
 var LevelEndHint = Line{EN: "Confirm to continue", UA: "Підтвердіть, щоб продовжити"}

@@ -8,9 +8,14 @@ package campaign
 import "copycat/internal/gameplay"
 
 // StoryCards holds one mockumentary paragraph per StoryKind, in StoryKind
-// order: the world 2 opening, the world 3 opening and the ending. The ending
-// pays off the D joke without revealing what the D stands for.
+// order: the level 1 intro, the world 2 opening, the world 3 opening and the
+// ending. The ending pays off the D joke without revealing what the D stands
+// for.
 var StoryCards = []Line{
+	StoryIntro: {
+		EN: "In the mangroves, Downald D was the only one who copied nothing. Copycat, meanwhile, copies everyone — every jump, every slide, every excuse — and now he wants Downald D's hair as a wig. Downald D says no. The narrator says: start running.",
+		UA: "У манграх Downald D був єдиним, хто нікого не копіював. А от Копікет копіює всіх підряд — кожен стрибок, кожен підкат, кожне виправдання — і тепер хоче зачіску Downald D собі як перуку. Downald D каже «ні». Оповідач каже: біжи.",
+	},
 	StoryWorld2: {
 		EN: "The proboscis monkey, Downald D, has escaped the mangroves. Gary's family has finally stopped filing paperwork. Now the rusty harbor opens ahead, a place where even the seagulls keep receipts. The narrator would wish him luck. The narrator has seen the containers.",
 		UA: "Носач Downald D утік із мангрів. Родина Гриця нарешті припинила подавати документи. Попереду розкривається іржава гавань — місце, де навіть чайки зберігають чеки. Оповідач побажав би йому удачі. Оповідач бачив ті контейнери.",

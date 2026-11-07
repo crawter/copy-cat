@@ -47,8 +47,16 @@ func TestNewGameStartsLevel1AndFinishUnlocksLevel2(t *testing.T) {
 	f.Handle(ActionDown)
 	f.Handle(ActionConfirm)
 
+	if f.Scene() != SceneStory {
+		t.Fatalf("Scene = %v after New Game, want SceneStory", f.Scene())
+	}
+	if f.Story() != StoryIntro {
+		t.Fatalf("Story = %v after New Game, want StoryIntro", f.Story())
+	}
+
+	f.Handle(ActionConfirm)
 	if f.Scene() != ScenePlay {
-		t.Fatalf("Scene = %v after New Game, want ScenePlay", f.Scene())
+		t.Fatalf("Scene = %v after intro confirm, want ScenePlay", f.Scene())
 	}
 	lv, ok := f.CurrentLevel()
 	if !ok || lv.ID != 1 {
@@ -221,11 +229,15 @@ func TestGameOverRetriesSameLevelWithFreshLivesAndPauseBlocks(t *testing.T) {
 	c := pitCampaign(t)
 	f := NewFlow(c, DefaultSettings(), NewProgress(), false)
 
-	// New Game.
+	// New Game opens the intro card, then the confirm starts level 1.
 	f.Handle(ActionDown)
 	f.Handle(ActionConfirm)
+	if f.Scene() != SceneStory {
+		t.Fatalf("Scene = %v after New Game, want SceneStory", f.Scene())
+	}
+	f.Handle(ActionConfirm)
 	if f.Scene() != ScenePlay {
-		t.Fatalf("Scene = %v after New Game, want ScenePlay", f.Scene())
+		t.Fatalf("Scene = %v after intro confirm, want ScenePlay", f.Scene())
 	}
 
 	// Pause stops the run and blocks StepRun.
@@ -419,6 +431,90 @@ func TestContinueStartsHighestUnlockedAndBossRematch(t *testing.T) {
 	if f2.Boss() == nil {
 		t.Fatalf("Boss = nil after completed Continue, want a boss rematch")
 	}
+}
+
+func TestContinueMapEndlessAndRetrySkipStoryIntro(t *testing.T) {
+	c := finishingCampaign()
+
+	t.Run("Continue", func(t *testing.T) {
+		f := NewFlow(c, DefaultSettings(), Progress{Unlocked: 4}, false)
+		f.Handle(ActionConfirm) // Continue is the first menu item.
+		if f.Scene() != ScenePlay {
+			t.Fatalf("Scene = %v after Continue, want ScenePlay", f.Scene())
+		}
+		if f.Scene() == SceneStory {
+			t.Fatalf("Continue opened the intro card")
+		}
+		lv, ok := f.CurrentLevel()
+		if !ok || lv.ID != 4 {
+			t.Fatalf("CurrentLevel = %+v, %v after Continue, want level 4", lv, ok)
+		}
+	})
+
+	t.Run("Map confirm", func(t *testing.T) {
+		f := NewFlow(c, DefaultSettings(), NewProgress(), false)
+		f.Handle(ActionDown)
+		f.Handle(ActionDown)
+		f.Handle(ActionConfirm) // Map.
+		if f.Scene() != SceneMap {
+			t.Fatalf("Scene = %v after map selection, want SceneMap", f.Scene())
+		}
+		f.Handle(ActionConfirm) // Level 1.
+		if f.Scene() != ScenePlay {
+			t.Fatalf("Scene = %v after map confirm, want ScenePlay", f.Scene())
+		}
+		if f.Scene() == SceneStory {
+			t.Fatalf("map confirm opened the intro card")
+		}
+	})
+
+	t.Run("StartEndless", func(t *testing.T) {
+		f := NewFlow(c, DefaultSettings(), NewProgress(), false)
+		f.StartEndless(7)
+		if f.Scene() != ScenePlay {
+			t.Fatalf("Scene = %v after StartEndless, want ScenePlay", f.Scene())
+		}
+		if f.Scene() == SceneStory {
+			t.Fatalf("StartEndless opened the intro card")
+		}
+	})
+
+	t.Run("Retry", func(t *testing.T) {
+		c2 := pitCampaign(t)
+		f := NewFlow(c2, DefaultSettings(), NewProgress(), false)
+		f.Handle(ActionDown)
+		f.Handle(ActionConfirm) // New Game opens the intro card.
+		if f.Scene() != SceneStory || f.Story() != StoryIntro {
+			t.Fatalf("Scene = %v, Story = %v after New Game, want SceneStory with StoryIntro", f.Scene(), f.Story())
+		}
+		f.Handle(ActionConfirm)
+		if f.Scene() != ScenePlay {
+			t.Fatalf("Scene = %v after intro confirm, want ScenePlay", f.Scene())
+		}
+
+		pit, ok := firstPit(f.Run().Level)
+		if !ok {
+			t.Fatalf("level has no pit to die in")
+		}
+		f.Run().Runner.Restart(pit.Z - 4)
+		f.Run().Lives = 1
+		stepUntilScene(t, f, SceneGameOver)
+		if f.Scene() != SceneGameOver {
+			t.Fatalf("Scene = %v after last life, want SceneGameOver", f.Scene())
+		}
+
+		f.Handle(ActionConfirm) // Retry is the first game-over item.
+		if f.Scene() != ScenePlay {
+			t.Fatalf("Scene = %v after Retry, want ScenePlay", f.Scene())
+		}
+		if f.Scene() == SceneStory {
+			t.Fatalf("Retry opened the intro card")
+		}
+		lv, ok := f.CurrentLevel()
+		if !ok || lv.ID != 1 {
+			t.Fatalf("CurrentLevel = %+v, %v after Retry, want level 1", lv, ok)
+		}
+	})
 }
 
 func TestEndlessDeterminism(t *testing.T) {

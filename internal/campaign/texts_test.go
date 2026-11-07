@@ -9,6 +9,7 @@ import (
 func allLines() []Line {
 	lines := []Line{
 		GameTitle,
+		TitleTagline,
 		MapTitle,
 		MapLocked,
 		SettingsTitle,
@@ -18,6 +19,9 @@ func allLines() []Line {
 		PauseTitle,
 		PauseHint,
 		LevelEndTitle,
+		LevelEndCombs,
+		LevelEndLivesLost,
+		LevelEndStomps,
 		LevelEndHint,
 		EndlessLevelEndTitle,
 		GameOverTitle,
@@ -27,6 +31,7 @@ func allLines() []Line {
 	lines = append(lines, LevelNames...)
 	lines = append(lines, SettingsItems...)
 	lines = append(lines, GameOverItems...)
+	lines = append(lines, KeyHints...)
 	return lines
 }
 
