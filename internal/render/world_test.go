@@ -26,7 +26,7 @@ func TestBuildWorldIncludesCorridor(t *testing.T) {
 	for _, c := range cs {
 		if c.Shape == ShapeBox && math.Abs(c.Size.Y-floorThickness) < 0.01 {
 			for lane := 0; lane < 3; lane++ {
-				if math.Abs(c.Pos.X-laneX(float64(lane))) < 0.01 {
+				if math.Abs(float64(c.Pos.X)-laneX(float64(lane))) < 0.01 {
 					seenLanes[lane] = true
 				}
 			}
@@ -148,8 +148,8 @@ func TestPitLeavesFloorGap(t *testing.T) {
 
 	var before, after bool
 	for _, c := range floorCmds(cs) {
-		z0 := c.Pos.Z - c.Size.Z/2
-		z1 := c.Pos.Z + c.Size.Z/2
+		z0 := float64(c.Pos.Z) - c.Size.Z/2
+		z1 := float64(c.Pos.Z) + c.Size.Z/2
 		if overlapsInterval(z0, z1, pit.Z, pit.Z+pit.Span) {
 			t.Fatalf("floor command %+v overlaps pit [%v, %v)", c, pit.Z, pit.Z+pit.Span)
 		}
@@ -309,10 +309,10 @@ func shapesNearZ(cs []Cmd, e levelgen.Element) map[Shape]bool {
 		if c.Shape == ShapeBox && math.Abs(c.Size.Y-floorThickness) < 0.01 {
 			continue
 		}
-		if math.Abs(c.Pos.Z-e.Z) > 0.25 {
+		if math.Abs(float64(c.Pos.Z)-e.Z) > 0.25 {
 			continue
 		}
-		if math.Abs(c.Pos.X-x) > 0.8 {
+		if math.Abs(float64(c.Pos.X)-x) > 0.8 {
 			continue
 		}
 		out[c.Shape] = true
@@ -345,7 +345,7 @@ func hasHazardCmd(cs []Cmd, pal ThemePalette, e levelgen.Element) bool {
 		if math.Abs(c.Size.Y-pitDepth) > 0.01 {
 			continue
 		}
-		if math.Abs(c.Pos.Z-z) > 0.6 {
+		if math.Abs(float64(c.Pos.Z)-z) > 0.6 {
 			continue
 		}
 		return true
@@ -360,7 +360,7 @@ func hasLowBarrierCmd(cs []Cmd, e levelgen.Element) bool {
 		if c.Shape != ShapeBox || math.Abs(c.Size.Y-lowBarrierH) > 0.01 {
 			continue
 		}
-		if math.Abs(c.Pos.Z-z) > 0.6 || math.Abs(c.Pos.X-x) > 0.6 {
+		if math.Abs(float64(c.Pos.Z)-z) > 0.6 || math.Abs(float64(c.Pos.X)-x) > 0.6 {
 			continue
 		}
 		return true
@@ -372,10 +372,10 @@ func hasHighBarrierCmd(cs []Cmd, e levelgen.Element) bool {
 	z := e.Z + barrierDepth/2
 	x := laneX(float64(e.Lane))
 	for _, c := range cs {
-		if c.Shape != ShapeBox || c.Size.Y <= 0.5 || c.Pos.Y < highBarrierGap {
+		if c.Shape != ShapeBox || c.Size.Y <= 0.5 || float64(c.Pos.Y) < highBarrierGap {
 			continue
 		}
-		if math.Abs(c.Pos.Z-z) > 0.6 || math.Abs(c.Pos.X-x) > 0.6 {
+		if math.Abs(float64(c.Pos.Z)-z) > 0.6 || math.Abs(float64(c.Pos.X)-x) > 0.6 {
 			continue
 		}
 		return true
@@ -393,7 +393,7 @@ func hasContainerCmd(cs []Cmd, pal ThemePalette, e levelgen.Element) bool {
 		if math.Abs(c.Size.Y-containerH) > 0.01 || math.Abs(c.Size.Z-e.Span) > 0.01 {
 			continue
 		}
-		if math.Abs(c.Pos.Z-z) > 0.6 || math.Abs(c.Pos.X-x) > 0.6 {
+		if math.Abs(float64(c.Pos.Z)-z) > 0.6 || math.Abs(float64(c.Pos.X)-x) > 0.6 {
 			continue
 		}
 		return true
@@ -408,7 +408,7 @@ func hasEnemyCmd(cs []Cmd, e levelgen.Element) bool {
 		if c.Shape != ShapeSphere {
 			continue
 		}
-		if math.Abs(c.Pos.Z-z) > 0.6 || math.Abs(c.Pos.X-x) > 0.6 {
+		if math.Abs(float64(c.Pos.Z)-z) > 0.6 || math.Abs(float64(c.Pos.X)-x) > 0.6 {
 			continue
 		}
 		return true

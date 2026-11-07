@@ -36,7 +36,7 @@ func BuildBossArena(cam Cam) []Cmd {
 			}
 			cs = append(cs, Cmd{
 				Shape: ShapePlane,
-				Pos:   Vec3{X: x0 + arenaTile/2, Y: 0, Z: z0 + arenaTile/2},
+				Pos:   v3(x0+arenaTile/2, 0, z0+arenaTile/2),
 				Size:  Size{X: arenaTileSize, Z: arenaTileSize},
 				Color: col,
 			})
@@ -55,16 +55,16 @@ func BuildBossArena(cam Cam) []Cmd {
 
 func barberChairCmds(x, z float64) []Cmd {
 	return []Cmd{
-		{Shape: ShapeCylinder, Pos: Vec3{X: x, Y: 0.25, Z: z}, Size: Size{X: 0.3, Y: 0.5}, Color: bossChair},
-		{Shape: ShapeBox, Pos: Vec3{X: x, Y: 0.75, Z: z}, Size: Size{X: 0.9, Y: 0.3, Z: 0.9}, Color: bossChair},
-		{Shape: ShapeBox, Pos: Vec3{X: x, Y: 1.25, Z: z + 0.5}, Size: Size{X: 0.9, Y: 0.9, Z: 0.2}, Color: bossChair},
+		{Shape: ShapeCylinder, Pos: v3(x, 0.25, z), Size: Size{X: 0.3, Y: 0.5}, Color: bossChair},
+		{Shape: ShapeBox, Pos: v3(x, 0.75, z), Size: Size{X: 0.9, Y: 0.3, Z: 0.9}, Color: bossChair},
+		{Shape: ShapeBox, Pos: v3(x, 1.25, z+0.5), Size: Size{X: 0.9, Y: 0.9, Z: 0.2}, Color: bossChair},
 	}
 }
 
 func standingMirrorCmds(x, z float64) []Cmd {
 	return []Cmd{
-		{Shape: ShapeBox, Pos: Vec3{X: x, Y: 0.95, Z: z}, Size: Size{X: 1.1, Y: 1.9, Z: 0.1}, Color: bossMirror},
-		{Shape: ShapeBox, Pos: Vec3{X: x, Y: 0.95, Z: z - 0.06}, Size: Size{X: 0.9, Y: 1.7, Z: 0.04}, Color: bossLight},
-		{Shape: ShapeBox, Pos: Vec3{X: x, Y: 0.05, Z: z}, Size: Size{X: 1.3, Y: 0.1, Z: 0.4}, Color: bossMirror},
+		{Shape: ShapeBox, Pos: v3(x, 0.95, z), Size: Size{X: 1.1, Y: 1.9, Z: 0.1}, Color: bossMirror},
+		{Shape: ShapeBox, Pos: v3(x, 0.95, z-0.06), Size: Size{X: 0.9, Y: 1.7, Z: 0.04}, Color: bossLight},
+		{Shape: ShapeBox, Pos: v3(x, 0.05, z), Size: Size{X: 1.3, Y: 0.1, Z: 0.4}, Color: bossMirror},
 	}
 }
