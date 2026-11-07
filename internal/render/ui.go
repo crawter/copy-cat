@@ -40,6 +40,9 @@ type UI struct {
 	introRun  *gameplay.Run
 	introBoss *gameplay.BossFight
 	introLeft float64
+
+	particles    []Particle
+	particleCmds []Cmd
 }
 
 // NewUI returns a UI that draws its text with fnt. The font is read-only and
@@ -48,8 +51,9 @@ func NewUI(fnt *font.Font) *UI {
 	return &UI{fnt: fnt, scale: uiScale}
 }
 
-// captionSnap holds the previous run or boss counters the caption layer
-// compares against, so each state transition earns exactly one caption.
+// captionSnap holds the previous run or boss counters the caption layer and
+// the particle layer compare against, so each state transition earns exactly
+// one caption and one particle burst.
 type captionSnap struct {
 	run  *gameplay.Run
 	boss *gameplay.BossFight
@@ -60,6 +64,9 @@ type captionSnap struct {
 	chase     float64
 	shield    int
 	phase     int
+
+	prevAirborne   bool // previous airborne state, to spawn landing dust
+	prevTotalCombs int  // previous total combs, to spawn comb sparkles
 }
 
 // The screen layout is described in the font's unscaled pixel grid; Draw
@@ -112,6 +119,7 @@ func (u *UI) Draw(f *campaign.Flow, w, h int) {
 	rl.ClearBackground(rlColor(uiBackground))
 	switch f.Scene() {
 	case campaign.ScenePlay:
+		u.updateParticles(f, dt)
 		u.drawScene(f)
 		u.drawLines(HUDLines(f), w, h, false)
 		u.drawCaption(f, w, h, dt)
@@ -159,6 +167,8 @@ func captionOnChange(f *campaign.Flow, prev *captionSnap) (gameplay.Line, bool) 
 			prev.chase = 0
 			prev.shield = 0
 			prev.phase = 0
+			prev.prevAirborne = false
+			prev.prevTotalCombs = 0
 			return gameplay.Line{}, false
 		}
 		prev.livesLost = r.LivesLost
@@ -166,6 +176,8 @@ func captionOnChange(f *campaign.Flow, prev *captionSnap) (gameplay.Line, bool) 
 		prev.bald = r.Bald
 		prev.chase = r.Chase
 		prev.shield = r.ShieldHits
+		prev.prevAirborne = r.Runner.Airborne()
+		prev.prevTotalCombs = r.TotalCombs
 		prev.phase = 0
 		return gameplay.Line{}, false
 	}
@@ -202,7 +214,38 @@ func captionOnChange(f *campaign.Flow, prev *captionSnap) (gameplay.Line, bool) 
 	prev.bald = r.Bald
 	prev.chase = r.Chase
 	prev.shield = r.ShieldHits
+	prev.prevAirborne = r.Runner.Airborne()
+	prev.prevTotalCombs = r.TotalCombs
 	return line, ok
+}
+
+// updateParticles advances the live particles by dt and spawns new ones from
+// the run transitions the caption snapshot detects: a comb collected, a
+// landing, or a snip. It runs before drawCaption, so the snapshot's previous
+// counters still describe the frame being left behind.
+func (u *UI) updateParticles(f *campaign.Flow, dt float64) {
+	u.particles = stepParticles(u.particles, dt)
+	r := f.Run()
+	if r == nil {
+		u.particles = u.particles[:0]
+		return
+	}
+	if r != u.caption.run {
+		// A new run started. drawCaption resets the snapshot this method
+		// compares against, so drop the previous run's leftovers now.
+		u.particles = u.particles[:0]
+		return
+	}
+	pos := Vec3{X: f32(laneX(r.Runner.Lane())), Y: f32(r.Runner.Height()), Z: f32(r.Runner.Z())}
+	if r.TotalCombs > u.caption.prevTotalCombs {
+		u.particles = append(u.particles, spawnSparkle(pos)...)
+	}
+	if u.caption.prevAirborne && !r.Runner.Airborne() {
+		u.particles = append(u.particles, spawnDust(pos)...)
+	}
+	if r.Bald && !u.caption.bald {
+		u.particles = append(u.particles, spawnHair(pos)...)
+	}
 }
 
 // drawCaption reports one caption per state transition and draws the active
@@ -616,6 +659,21 @@ func (u *UI) drawScene(f *campaign.Flow) {
 	u.drawModelAt(BuildHero(heroPoseFor(r), r.Bald), pos)
 	chase := copycatChase(r.Chase)
 	u.drawModelAt(BuildCopycat(chase), Vec3{X: pos.X, Y: 0, Z: pos.Z})
+	u.drawParticles()
+}
+
+// drawParticles draws the live particles as small primitives after the world
+// and hero, reusing a scratch command list so the hot path never allocates.
+func (u *UI) drawParticles() {
+	u.particleCmds = u.particleCmds[:0]
+	for _, p := range u.particles {
+		size := Size{X: p.Size, Y: p.Size, Z: p.Size}
+		if p.Shape == ShapeSphere {
+			size = Size{X: p.Size}
+		}
+		u.particleCmds = append(u.particleCmds, Cmd{Shape: p.Shape, Pos: p.Pos, Size: size, Color: p.Color})
+	}
+	DrawCmds(u.particleCmds)
 }
 
 func (u *UI) cameraFor(f *campaign.Flow) rl.Camera3D {
