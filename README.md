@@ -1,16 +1,25 @@
-# copy-cat
+# Hair Raid
 
-copy-cat is a small but complete 3D corridor runner that sits between Crash Bandicoot and Subway Surfers. You play Downald D, a proboscis monkey with tremendous hair, auto-running through an auto-generated corridor world. Chasing him is Copycat, the cat barber, who wants that hair for himself.
+Hair Raid is a small but complete 3D corridor runner that sits between Crash Bandicoot and Subway Surfers. You play Downald D, a proboscis monkey with tremendous hair, auto-running through an auto-generated corridor world. Chasing him is Copycat, the cat barber, who wants that hair for himself.
 
 ## Requirements
 
 - Go 1.22 or newer
-- A C compiler, because raylib links through cgo
+- A C compiler, because raylib links through cgo:
+  - Windows: MinGW-w64 on the PATH
+  - Linux: X11 and OpenGL development packages
+  - macOS: Xcode Command Line Tools
 - A desktop operating system (Windows, macOS, or Linux)
 
 ## Build and run
 
-Build everything and run the game:
+Fetch the dependencies first; this writes go.sum, which is not committed:
+
+```
+go mod tidy
+```
+
+Then build everything and run the game:
 
 ```
 go build ./...
@@ -37,7 +46,8 @@ go test ./...
 - Arrow keys — switch lanes left and right
 - ArrowUp or Space — jump
 - ArrowDown — slide; press it in the air to slam down
-- Esc — pause during a run
+- P — pause and resume during a run
+- Q — quit immediately, without confirmation
 
 In menus:
 
@@ -51,6 +61,7 @@ In menus:
 - A — jump and confirm
 - B — slide and go back
 - Start — pause
+- Select — quit
 
 ## What's in the game
 
