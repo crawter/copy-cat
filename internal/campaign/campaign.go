@@ -358,6 +358,26 @@ func (f *Flow) Run() *gameplay.Run { return f.run }
 // Boss returns the active boss fight, or nil when the flow is not in one.
 func (f *Flow) Boss() *gameplay.BossFight { return f.boss }
 
+// MenuIndex returns the zero-based index of the highlighted selection in the
+// current scene's list: the language pick, main menu, map, settings or game
+// over. Scenes without a selection report 0.
+func (f *Flow) MenuIndex() int {
+	switch f.scene {
+	case SceneLanguagePick:
+		return f.langSel
+	case SceneMainMenu:
+		return f.menuSel
+	case SceneMap:
+		return f.mapSel
+	case SceneSettings:
+		return f.setSel
+	case SceneGameOver:
+		return f.overSel
+	default:
+		return 0
+	}
+}
+
 // Handle applies one menu action to the current scene.
 func (f *Flow) Handle(a Action) {
 	switch f.scene {
