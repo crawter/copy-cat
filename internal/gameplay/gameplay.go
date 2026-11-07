@@ -1,5 +1,5 @@
 // Package gameplay applies the run's rules on top of the runner: hits,
-// stomps, the Copycat chase with its snip, lives and death causes.
+// stomps, the Copycat chase with its snip, pickups, lives and death causes.
 //
 // The runner simulates movement only and reports events; gameplay reads those
 // events and turns them into outcomes. It is pure Go and imports only the
@@ -48,12 +48,16 @@ const (
 	OutcomeFinished
 	OutcomeDied
 	OutcomeShieldSaved
+	OutcomeComb
+	OutcomeHairspray
+	OutcomeCheckpoint
+	OutcomeLife
 )
 
 // Run owns the rules the runner reports into: hits become stumbles, a close
-// chase turns a second stumble into a snip, pits and snips cost lives, and
-// stomps defeat enemies. Pickups, the boss fight and the campaign build on it
-// unchanged.
+// chase turns a second stumble into a snip, pits and snips cost lives, stomps
+// defeat enemies, and pickups grant combs, a shield and checkpoints. The boss
+// fight and the campaign build on it unchanged.
 type Run struct {
 	// Runner is the movement simulation the run steps.
 	Runner *runner.Runner
@@ -61,6 +65,9 @@ type Run struct {
 	Level *levelgen.Level
 	// Lives is how many lives remain; 0 means the run is dead.
 	Lives int
+	// Combs is how many combs the run has collected toward the next extra
+	// life. Every 100 combs grant one life, keeping the remainder.
+	Combs int
 	// ShieldHits is how many snips a hairspray shield still absorbs.
 	ShieldHits int
 	// Chase is how close Copycat is, from 0 (far) to 1 (close). A stumble
@@ -76,10 +83,18 @@ type Run struct {
 	Cause Cause
 	// State is the run's current state.
 	State State
+
+	// pickups is the level's pickup elements in level order, kept so Step
+	// never allocates to scan them.
+	pickups []levelgen.Element
+	// collected records which pickups the run already collected, keyed by
+	// kind, lane and Z, so a respawn never collects one twice.
+	collected map[pickupKey]bool
 }
 
 // NewRun returns a run driving r over level with lives starting lives. The
-// hero starts intact: no shield, no chase, hair on, at the level start.
+// hero starts intact: no shield, no chase, no combs, hair on, at the level
+// start.
 func NewRun(r *runner.Runner, level *levelgen.Level, lives int) *Run {
 	if lives < 0 {
 		lives = 0
@@ -90,6 +105,8 @@ func NewRun(r *runner.Runner, level *levelgen.Level, lives int) *Run {
 		Lives:       lives,
 		CheckpointZ: 0,
 		State:       StateRunning,
+		pickups:     pickupsOf(level),
+		collected:   make(map[pickupKey]bool),
 	}
 }
 
@@ -103,6 +120,8 @@ func (r *Run) Step(in runner.Input, dt float64) []Outcome {
 
 	events := r.Runner.Step(in, dt)
 	var out []Outcome
+	out = append(out, r.collectPickups()...)
+
 	stumbled := false
 	finished := false
 
@@ -130,6 +149,46 @@ func (r *Run) Step(in runner.Input, dt float64) []Outcome {
 
 	if !finished && !stumbled && r.State == StateRunning {
 		r.decayChase(dt)
+	}
+	return out
+}
+
+// collectPickups collects the pickups the hero currently reaches. It runs
+// right after the runner moves and before the events become outcomes, so a
+// pickup the hero crosses on the way into a pit still counts.
+func (r *Run) collectPickups() []Outcome {
+	z := r.Runner.Z()
+	lane := laneOf(r.Runner.Lane())
+	var out []Outcome
+	for _, e := range r.pickups {
+		if e.Lane != lane {
+			continue
+		}
+		if math.Abs(e.Z-z) > pickupReach {
+			continue
+		}
+		key := pickupKey{kind: e.Kind, lane: e.Lane, z: e.Z}
+		if r.collected[key] {
+			continue
+		}
+		r.collected[key] = true
+		switch e.Kind {
+		case levelgen.Comb:
+			r.Combs++
+			out = append(out, OutcomeComb)
+			if r.Combs >= combsPerLife {
+				r.Combs -= combsPerLife
+				r.Lives++
+				out = append(out, OutcomeLife)
+			}
+		case levelgen.Hairspray:
+			r.ShieldHits = shieldHitsCap
+			out = append(out, OutcomeHairspray)
+		case levelgen.Mirror:
+			r.CheckpointZ = e.Z
+			r.Bald = false
+			out = append(out, OutcomeCheckpoint)
+		}
 	}
 	return out
 }
@@ -239,6 +298,28 @@ func laneOf(lane float64) int {
 	return int(math.Round(lane))
 }
 
+// pickupKey identifies one placed pickup so a collected pickup is never
+// collected twice after a respawn.
+type pickupKey struct {
+	kind levelgen.Kind
+	lane int
+	z    float64
+}
+
+// pickupsOf returns the level's pickup elements in level order. It copies
+// once at construction so Step never allocates while scanning.
+func pickupsOf(level *levelgen.Level) []levelgen.Element {
+	all := level.Elements(0, level.Length())
+	pickups := make([]levelgen.Element, 0, len(all))
+	for _, e := range all {
+		switch e.Kind {
+		case levelgen.Comb, levelgen.Hairspray, levelgen.Mirror:
+			pickups = append(pickups, e)
+		}
+	}
+	return pickups
+}
+
 const (
 	// chaseThreshold is the chase level at or above which a stumble becomes a
 	// snip instead of starting the chase.
@@ -248,4 +329,15 @@ const (
 	// obstacleDepth matches the barrier and enemy footprint the runner and
 	// levelgen use, in meters.
 	obstacleDepth = 1.0
+)
+
+const (
+	// pickupReach is how close the hero's front edge must be to a pickup's Z,
+	// in meters, to collect it.
+	pickupReach = 0.5
+	// combsPerLife is how many combs grant one extra life.
+	combsPerLife = 100
+	// shieldHitsCap is the most ShieldHits a hairspray can grant; the shield
+	// never stacks beyond it.
+	shieldHitsCap = 1
 )
