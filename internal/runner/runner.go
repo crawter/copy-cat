@@ -188,6 +188,40 @@ func (r *Runner) OnContainer() bool { return r.onContainer }
 // Speed returns the current forward speed, in meters per second.
 func (r *Runner) Speed() float64 { return r.speed }
 
+// Restart resets the runner so a run resumes cleanly from startZ: lane back
+// to center, height and vertical motion to zero, speed to the base speed, all
+// timers cleared, forward motion un-stopped and Z moved to startZ. It is the
+// primitive the gameplay layer uses to respawn the hero at a checkpoint.
+func (r *Runner) Restart(startZ float64) {
+	r.z = startZ
+	r.lane = 1
+	r.height = 0
+	r.vy = 0
+	r.air = false
+	r.sliding = false
+	r.slideTimer = 0
+	r.slamming = false
+	r.slamLock = 0
+	r.onContainer = false
+	r.switching = false
+	r.switchFrom = 0
+	r.switchTarget = 0
+	r.switchProgress = 0
+	r.speed = r.cfg.BaseSpeed
+	r.stopped = false
+	r.finished = false
+
+	r.cursor = 0
+	for r.cursor < len(r.elems) {
+		_, end := spanOf(r.elems[r.cursor])
+		if end <= startZ {
+			r.cursor++
+			continue
+		}
+		break
+	}
+}
+
 func sanitizeConfig(c Config) Config {
 	d := DefaultConfig()
 	if c.BaseSpeed <= 0 {
