@@ -26,6 +26,7 @@ type ScreenLine struct {
 type UI struct {
 	fnt   *font.Font
 	scale int
+	anim  float32 // seconds of animation elapsed, advanced every frame
 }
 
 // NewUI returns a UI that draws its text with fnt. The font is read-only and
@@ -66,6 +67,7 @@ const cameraPerspective = 0
 // playing or paused, then draws the matching screen text.
 func (u *UI) Draw(f *campaign.Flow, w, h int) {
 	rl.ClearBackground(rlColor(uiBackground))
+	u.anim += rl.GetFrameTime()
 	switch f.Scene() {
 	case campaign.ScenePlay:
 		u.drawScene(f)
@@ -73,7 +75,16 @@ func (u *UI) Draw(f *campaign.Flow, w, h int) {
 	case campaign.ScenePause:
 		u.drawScene(f)
 		u.drawLines(MenuLines(f), w, h, true)
-	case campaign.SceneStory, campaign.SceneEnding, campaign.SceneCredits:
+	case campaign.SceneMainMenu:
+		u.drawHeroFacing(PoseRun)
+		u.drawLines(MenuLines(f), w, h, true)
+	case campaign.SceneGameOver:
+		u.drawHeroFacing(PoseIdle)
+		u.drawLines(MenuLines(f), w, h, true)
+	case campaign.SceneStory, campaign.SceneEnding:
+		u.drawHeroFacing(PoseIdle)
+		u.drawLines(StoryLines(f), w, h, true)
+	case campaign.SceneCredits:
 		u.drawLines(StoryLines(f), w, h, true)
 	default:
 		u.drawLines(MenuLines(f), w, h, true)
@@ -323,6 +334,23 @@ func storyWrap(text string, x, y, gap int) []ScreenLine {
 	}
 	lines = append(lines, uiLine(cur, x, y, false))
 	return lines
+}
+
+// drawHeroFacing draws the animated Downald D turned toward the camera. The
+// facing model negates every command's Z, so the nose points at -z; the
+// camera therefore sits on the -z side and looks back at his face. It is the
+// hero shot behind the title, story and game-over screens.
+func (u *UI) drawHeroFacing(pose HeroPose) {
+	cam := rl.Camera3D{
+		Position:   rl.Vector3{X: 0, Y: 1.4, Z: -3.4},
+		Target:     rl.Vector3{X: 0, Y: 1.05, Z: 0},
+		Up:         rl.Vector3{X: 0, Y: 1, Z: 0},
+		Fovy:       60,
+		Projection: cameraPerspective,
+	}
+	rl.BeginMode3D(cam)
+	defer rl.EndMode3D()
+	u.drawModelAt(BuildHeroAtFacing(pose, false, float64(u.anim)), Vec3{})
 }
 
 // drawScene draws the 3D scene behind play and pause: the generated corridor

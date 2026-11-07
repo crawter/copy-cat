@@ -1,6 +1,10 @@
 package render
 
-import "copycat/internal/campaign"
+import (
+	"math"
+
+	"copycat/internal/campaign"
+)
 
 // HeroPose is one of Downald D's canonical body poses. The caller maps the
 // runner's state onto it; BuildHero turns the pose into a command list.
@@ -28,6 +32,30 @@ var (
 	heroTail  = Color{R: 246, G: 246, B: 240, A: 255} // white tail
 	heroNose  = Color{R: 210, G: 120, B: 92, A: 255}  // huge dangling nose
 	heroHair  = Color{R: 240, G: 202, B: 112, A: 255} // light swept hairstyle
+)
+
+// Hero proportions and animation tuning, in meters and radians per second.
+// They are the fixed rounded geometry the poses animate around, so the six
+// part colors above stay the only per-model palette.
+const (
+	heroTorsoR = 0.3  // torso capsule radius
+	heroHeadR  = 0.22 // head sphere radius
+	heroBellyR = 0.17 // pale belly sphere radius
+
+	heroLegR   = 0.09 // leg capsule radius
+	heroLegLen = 0.52 // standing leg length
+	heroArmX   = 0.38 // each shoulder's horizontal distance from the spine
+	heroArmR   = 0.07 // arm capsule radius
+	heroArmLen = 0.45 // arm length
+	heroArmY   = 1.0  // arm shoulder height
+
+	runCycleRate     = 10.0 // limb swing rate, radians per second
+	noseWobbleRate   = 9.0  // nose side-to-side rate, radians per second
+	noseWobble       = 0.07 // nose side-to-side amplitude, meters
+	hairFlutterRateY = 11.0 // hair vertical flutter rate, radians per second
+	hairFlutterRateZ = 9.0  // hair backward flutter rate, radians per second
+	hairFlutterY     = 0.03 // hair vertical flutter amplitude, meters
+	hairFlutterZ     = 0.05 // hair backward flutter amplitude, meters
 )
 
 // Copycat and his boss form share the barber look: a dark cat, a pale apron
@@ -66,18 +94,39 @@ const (
 	enemyVacuum
 )
 
-// BuildHero returns Downald D's model as a draw list. The hero stands at the
-// origin with his feet at y = 0 and faces +z, so the caller can translate the
-// list onto his lane and height. pose picks the pose; bald removes only the
-// hairstyle.
+// BuildHero returns Downald D's model as a draw list at rest. The hero stands
+// at the origin with his feet at y = 0 and faces +z, so the caller can
+// translate the list onto his lane and height. pose picks the pose; bald
+// removes only the hairstyle.
 func BuildHero(pose HeroPose, bald bool) []Cmd {
+	return BuildHeroAt(pose, bald, 0)
+}
+
+// BuildHeroAt returns Downald D's model as a draw list at animation time t,
+// in seconds. It is the same rounded hero as BuildHero with the run cycle,
+// nose wobble and hair flutter advanced by t; t = 0 is the rest pose
+// BuildHero returns. The result is a pure, deterministic function of its
+// arguments.
+func BuildHeroAt(pose HeroPose, bald bool, t float64) []Cmd {
 	s := heroSpecFor(pose)
+	tf := float32(t)
 	cs := heroTorsoCmds(s)
-	cs = append(cs, heroLimbCmds(s)...)
+	cs = append(cs, heroLimbCmds(s, tf)...)
 	cs = append(cs, heroTailCmds(s)...)
-	cs = append(cs, heroNoseCmds(s)...)
+	cs = append(cs, heroNoseCmds(s, tf)...)
 	if !bald {
-		cs = append(cs, heroHairCmds(s)...)
+		cs = append(cs, heroHairCmds(s, tf)...)
+	}
+	return cs
+}
+
+// BuildHeroAtFacing returns the animated hero turned to face the camera: the
+// same draw list as BuildHeroAt with every command's Z negated, so the nose
+// that normally points +z points at a camera placed in front of the hero.
+func BuildHeroAtFacing(pose HeroPose, bald bool, t float64) []Cmd {
+	cs := BuildHeroAt(pose, bald, t)
+	for i := range cs {
+		cs[i].Pos.Z = -cs[i].Pos.Z
 	}
 	return cs
 }
@@ -95,6 +144,7 @@ type heroSpec struct {
 	tailZ     float32
 	hairSweep float32
 	hairDip   float32
+	runCycle  bool
 }
 
 func heroSpecFor(pose HeroPose) heroSpec {
@@ -105,6 +155,7 @@ func heroSpecFor(pose HeroPose) heroSpec {
 			legAhead: 0.22, armSwing: 0.18, armOut: 0.04,
 			tailY: 0.72, tailZ: -0.68,
 			hairSweep: 0.12, hairDip: 0.05,
+			runCycle:  true,
 		}
 	case PoseJump:
 		return heroSpec{
@@ -135,66 +186,123 @@ func heroSpecFor(pose HeroPose) heroSpec {
 	}
 }
 
-func heroTorsoCmds(s heroSpec) []Cmd {
+// sin1 and cos1 are the hero's two animation drivers. Every time-varying
+// offset derives from them so the model stays a pure function of t.
+func sin1(t float32, rate float64) float32 {
+	return float32(math.Sin(float64(t) * rate))
+}
+
+func cos1(t float32, rate float64) float32 {
+	return float32(math.Cos(float64(t) * rate))
+}
+
+// capsule returns a rounded limb: a vertical cylinder with a sphere at each
+// end, centered at (x, y, z) and length long from end to end. The hero's
+// torso, arms and legs are all built from it.
+func capsule(x, y, z, length, radius float32, col Color) []Cmd {
+	cylH := length - 2*radius
+	if cylH < 0 {
+		cylH = 0
+	}
+	half := cylH / 2
 	return []Cmd{
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.bodyY, Z: 0}, Size: Size{X: 0.7, Y: float64(s.bodyH), Z: 0.45}, Color: heroBody},
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.bodyY - 0.05, Z: 0.23}, Size: Size{X: 0.5, Y: float64(s.bodyH - 0.25), Z: 0.12}, Color: heroBelly},
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.headY, Z: 0.02}, Size: Size{X: 0.44, Y: 0.34, Z: 0.4}, Color: heroBody},
+		{Shape: ShapeCylinder, Pos: Vec3{X: x, Y: y, Z: z}, Size: Size{X: float64(radius), Y: float64(cylH)}, Color: col},
+		{Shape: ShapeSphere, Pos: Vec3{X: x, Y: y - half, Z: z}, Size: Size{X: float64(radius)}, Color: col},
+		{Shape: ShapeSphere, Pos: Vec3{X: x, Y: y + half, Z: z}, Size: Size{X: float64(radius)}, Color: col},
 	}
 }
 
-func heroLimbCmds(s heroSpec) []Cmd {
+func heroTorsoCmds(s heroSpec) []Cmd {
+	cylH := s.bodyH - 2*heroTorsoR
+	if cylH < 0 {
+		cylH = 0
+	}
+	half := cylH / 2
+	return []Cmd{
+		{Shape: ShapeCylinder, Pos: Vec3{X: 0, Y: s.bodyY, Z: 0}, Size: Size{X: heroTorsoR, Y: float64(cylH)}, Color: heroBody},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.bodyY - half, Z: 0}, Size: Size{X: heroTorsoR}, Color: heroBody},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.bodyY + half, Z: 0}, Size: Size{X: heroTorsoR}, Color: heroBody},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.bodyY - 0.02, Z: 0.22}, Size: Size{X: heroBellyR}, Color: heroBelly},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.headY, Z: 0.02}, Size: Size{X: heroHeadR}, Color: heroBody},
+	}
+}
+
+func heroLimbCmds(s heroSpec, t float32) []Cmd {
 	var cs []Cmd
-	legH := 0.55 - s.legUp*2
-	if legH < 0.1 {
-		legH = 0.1
+
+	legLen := heroLegLen - s.legUp*2
+	if legLen < 0.14 {
+		legLen = 0.14
 	}
-	legY := 0.28 + s.legUp
-	for i, dz := range []float32{-s.legAhead, s.legAhead} {
-		x := float32(-0.18)
+	legSwing := s.legAhead
+	armSwing := s.armSwing
+	if s.runCycle {
+		legSwing = s.legAhead * sin1(t, runCycleRate)
+		armSwing = s.armSwing * cos1(t, runCycleRate)
+	}
+	for i, dz := range []float32{-legSwing, legSwing} {
+		x := float32(-0.17)
 		if i == 1 {
-			x = 0.18
+			x = 0.17
 		}
-		cs = append(cs, Cmd{
-			Shape: ShapeBox,
-			Pos:   Vec3{X: x, Y: legY, Z: dz},
-			Size:  Size{X: 0.16, Y: float64(legH), Z: 0.16},
-			Color: heroLimb,
-		})
+		cs = append(cs, capsule(x, legLen/2, dz, legLen, heroLegR, heroLimb)...)
 	}
-	for i, dz := range []float32{-s.armSwing, s.armSwing} {
-		x := 0.38 + s.armOut
+	for i, dz := range []float32{-armSwing, armSwing} {
+		x := heroArmX + s.armOut
 		if i == 0 {
 			x = -x
 		}
-		cs = append(cs, Cmd{
-			Shape: ShapeBox,
-			Pos:   Vec3{X: x, Y: 1.0, Z: dz},
-			Size:  Size{X: 0.13, Y: 0.45, Z: 0.13},
-			Color: heroLimb,
-		})
+		cs = append(cs, capsule(x, heroArmY, dz, heroArmLen, heroArmR, heroLimb)...)
 	}
 	return cs
 }
 
 func heroTailCmds(s heroSpec) []Cmd {
 	return []Cmd{
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.tailY, Z: s.tailZ}, Size: Size{X: 0.1, Y: 0.1, Z: 0.55}, Color: heroTail},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.tailY, Z: s.tailZ + 0.06}, Size: Size{X: 0.09}, Color: heroTail},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.tailY + 0.02, Z: s.tailZ - 0.06}, Size: Size{X: 0.08}, Color: heroTail},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.tailY + 0.05, Z: s.tailZ - 0.17}, Size: Size{X: 0.07}, Color: heroTail},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.tailY + 0.09, Z: s.tailZ - 0.27}, Size: Size{X: 0.06}, Color: heroTail},
 	}
 }
 
-func heroNoseCmds(s heroSpec) []Cmd {
+func heroNoseCmds(s heroSpec, t float32) []Cmd {
+	// The nose is a dangling proboscis: a sphere bridging to the face, a cone
+	// bulging forward and down, and a round bulb at the tip. It sways from
+	// side to side and bobs forward as Downald moves.
+	nx := noseWobble * sin1(t, noseWobbleRate)
+	nz := noseWobble * 0.4 * sin1(t, noseWobbleRate+2)
+	h := s.headY
 	return []Cmd{
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.headY - 0.28, Z: 0.3}, Size: Size{X: 0.22, Y: 0.55, Z: 0.4}, Color: heroNose},
+		{Shape: ShapeSphere, Pos: Vec3{X: nx, Y: h - 0.13, Z: 0.30 + nz}, Size: Size{X: 0.14}, Color: heroNose},
+		{Shape: ShapeCone, Pos: Vec3{X: nx, Y: h - 0.30, Z: 0.36 + nz}, Size: Size{X: 0.18, Y: 0.52}, Color: heroNose},
+		{Shape: ShapeSphere, Pos: Vec3{X: nx, Y: h - 0.52, Z: 0.46 + nz}, Size: Size{X: 0.18}, Color: heroNose},
 	}
 }
 
-func heroHairCmds(s heroSpec) []Cmd {
-	return []Cmd{
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.headY + 0.18, Z: 0}, Size: Size{X: 0.48, Y: 0.12, Z: 0.42}, Color: heroHair},
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.headY + 0.13, Z: -0.16 - s.hairSweep}, Size: Size{X: 0.46, Y: 0.1, Z: 0.34}, Color: heroHair},
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.headY + 0.05 - s.hairDip, Z: -0.3 - s.hairSweep}, Size: Size{X: 0.4, Y: 0.09, Z: 0.28}, Color: heroHair},
+func heroHairCmds(s heroSpec, t float32) []Cmd {
+	// The quiff is a swept-up blond crest: a cap of spheres on the crown,
+	// then cones and a tip sphere sweeping up and backward. Wind makes it bob
+	// up and blow farther back.
+	fy := hairFlutterY * sin1(t, hairFlutterRateY)
+	fz := hairFlutterZ * sin1(t, hairFlutterRateZ)
+	h := s.headY
+	place := func(baseY, baseZ float32) (float32, float32) {
+		return baseY + fy - s.hairDip, baseZ - s.hairSweep - fz
 	}
+	y, z := place(h+0.2, -0.02)
+	cs := []Cmd{
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: y, Z: z}, Size: Size{X: 0.19}, Color: heroHair},
+	}
+	y, z = place(h+0.34, -0.12)
+	cs = append(cs, Cmd{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: y, Z: z}, Size: Size{X: 0.14}, Color: heroHair})
+	y, z = place(h+0.42, -0.24)
+	cs = append(cs, Cmd{Shape: ShapeCone, Pos: Vec3{X: 0, Y: y, Z: z}, Size: Size{X: 0.12, Y: 0.3}, Color: heroHair})
+	y, z = place(h+0.34, -0.38)
+	cs = append(cs, Cmd{Shape: ShapeCone, Pos: Vec3{X: 0, Y: y, Z: z}, Size: Size{X: 0.09, Y: 0.26}, Color: heroHair})
+	y, z = place(h+0.5, -0.34)
+	cs = append(cs, Cmd{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: y, Z: z}, Size: Size{X: 0.09}, Color: heroHair})
+	return cs
 }
 
 // BuildEnemy returns the enemy model for theme at pos, with its feet at y = 0.
