@@ -47,6 +47,26 @@ const (
 	SoundSnip
 	// SoundCheckpoint is the chime played when a checkpoint is reached.
 	SoundCheckpoint
+	// SoundStomp is the low thump played when the hero stomps an enemy.
+	SoundStomp
+	// SoundFall is the descending whistle played when the hero falls.
+	SoundFall
+	// SoundFanfare is the bright jingle played when a level is completed.
+	SoundFanfare
+	// SoundGameOver is the sad jingle played when a run ends in a game over.
+	SoundGameOver
+	// SoundMenuMove is the click played when the menu cursor moves.
+	SoundMenuMove
+	// SoundMenuSelect is the confirm blip played when a menu item is chosen.
+	SoundMenuSelect
+	// SoundExtraLife is the rising chime played when an extra life is earned.
+	SoundExtraLife
+	// SoundBossHit is the harsh metallic hit played when the boss takes damage.
+	SoundBossHit
+	// SoundHonk is Downald D's nasal honk.
+	SoundHonk
+	// SoundMeow is Copycat's meow.
+	SoundMeow
 )
 
 const (
@@ -138,8 +158,8 @@ func (m *Mixer) Play(s Sound) {
 	if s < SoundJump {
 		s = SoundJump
 	}
-	if s > SoundCheckpoint {
-		s = SoundCheckpoint
+	if s > SoundMeow {
+		s = SoundMeow
 	}
 	if len(m.effects) == maxActiveSounds {
 		copy(m.effects, m.effects[1:])

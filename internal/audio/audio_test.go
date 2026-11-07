@@ -39,7 +39,10 @@ func TestEveryTrackRendersNonSilent(t *testing.T) {
 }
 
 func TestEverySoundRendersNonSilent(t *testing.T) {
-	sounds := []Sound{SoundJump, SoundSlide, SoundSlam, SoundComb, SoundHairspray, SoundHit, SoundSnip, SoundCheckpoint}
+	sounds := []Sound{
+		SoundJump, SoundSlide, SoundSlam, SoundComb, SoundHairspray, SoundHit, SoundSnip, SoundCheckpoint,
+		SoundStomp, SoundFall, SoundFanfare, SoundGameOver, SoundMenuMove, SoundMenuSelect, SoundExtraLife, SoundBossHit, SoundHonk, SoundMeow,
+	}
 	for _, snd := range sounds {
 		m := New(testSampleRate)
 		m.Play(snd)
@@ -47,6 +50,14 @@ func TestEverySoundRendersNonSilent(t *testing.T) {
 		m.Fill(buf)
 		if !hasSignal(buf) {
 			t.Errorf("sound %v rendered only silence", snd)
+		}
+	}
+}
+
+func TestEverySoundHasPositiveDuration(t *testing.T) {
+	for s := SoundJump; s <= SoundMeow; s++ {
+		if soundDur[s] <= 0 {
+			t.Errorf("sound %v has non-positive duration %v", s, soundDur[s])
 		}
 	}
 }
@@ -127,7 +138,10 @@ func TestSoundVolumeSilencesEffects(t *testing.T) {
 func TestMixingClamps(t *testing.T) {
 	m := New(testSampleRate)
 	m.PlayMusic(TrackBoss)
-	for _, snd := range []Sound{SoundJump, SoundSlide, SoundSlam, SoundComb, SoundHairspray, SoundHit, SoundSnip, SoundCheckpoint} {
+	for _, snd := range []Sound{
+		SoundJump, SoundSlide, SoundSlam, SoundComb, SoundHairspray, SoundHit, SoundSnip, SoundCheckpoint,
+		SoundStomp, SoundFall, SoundFanfare, SoundGameOver, SoundMenuMove, SoundMenuSelect, SoundExtraLife, SoundBossHit, SoundHonk, SoundMeow,
+	} {
 		m.Play(snd)
 	}
 	buf := make([]float32, testSampleRate*2)
