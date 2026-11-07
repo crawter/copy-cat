@@ -27,6 +27,10 @@ type UI struct {
 	fnt   *font.Font
 	scale int
 	anim  float32 // seconds of animation elapsed, advanced every frame
+
+	fadeCover   float64        // 1 hides the scene behind the fade, 0 shows it
+	fadeScene   campaign.Scene // scene the current fade started on
+	fadeStarted bool
 }
 
 // NewUI returns a UI that draws its text with fnt. The font is read-only and
@@ -47,6 +51,10 @@ const (
 	// storyWrapChars is the maximum rune count a story or ending line holds
 	// before it wraps to the next line.
 	storyWrapChars = 60
+
+	// fadeDuration is how long a scene fade takes to reveal the new scene,
+	// in seconds.
+	fadeDuration = 0.25
 )
 
 // UI colors, drawn behind and over the screen text.
@@ -66,8 +74,10 @@ const cameraPerspective = 0
 // pixels. It clears the window, draws the 3D corridor or boss arena while
 // playing or paused, then draws the matching screen text.
 func (u *UI) Draw(f *campaign.Flow, w, h int) {
+	dt := float64(rl.GetFrameTime())
+	u.anim += float32(dt)
+	u.advanceFade(f.Scene(), dt)
 	rl.ClearBackground(rlColor(uiBackground))
-	u.anim += rl.GetFrameTime()
 	switch f.Scene() {
 	case campaign.ScenePlay:
 		u.drawScene(f)
@@ -89,6 +99,7 @@ func (u *UI) Draw(f *campaign.Flow, w, h int) {
 	default:
 		u.drawLines(MenuLines(f), w, h, true)
 	}
+	u.drawFade(w, h, sceneBackdrop(f))
 }
 
 // MenuLines returns the plain text of the current menu screen: the language
@@ -362,11 +373,13 @@ func (u *UI) drawScene(f *campaign.Flow) {
 	defer rl.EndMode3D()
 
 	if b := f.Boss(); b != nil {
-		DrawCmds(BuildBossArena(Cam{Lane: float64(b.HeroLane()), Z: 0, Height: 0}))
+		cs := BuildBossArena(Cam{Lane: float64(b.HeroLane()), Z: 0, Height: 0})
+		DrawCmds(FogCmds(cs, bossDark, float64(cam.Position.Z)))
 		heroPos := Vec3{X: f32(laneX(float64(b.HeroLane()))), Y: 0, Z: 0}
-		u.drawModelAt(BuildHero(PoseRun, false), heroPos)
+		u.drawModelAt(BuildHero(bossHeroPose(b), false), heroPos)
 		bossPos := Vec3{X: f32(laneX(float64(b.AttackLane()))), Y: 0, Z: 8}
 		u.drawModelAt(BuildBoss(b.Phase(), b.Vulnerable()), bossPos)
+		DrawCmds(telegraphCmds(b))
 		return
 	}
 
@@ -375,11 +388,13 @@ func (u *UI) drawScene(f *campaign.Flow) {
 		return
 	}
 	theme := runTheme(f)
+	pal := Palette(theme)
 	cam3 := Cam{Lane: r.Runner.Lane(), Z: r.Runner.Z(), Height: r.Runner.Height()}
-	DrawCmds(BuildWorld(r.Level, theme, cam3))
+	cs := BuildWorld(r.Level, theme, cam3)
+	DrawCmds(FogCmds(cs, pal.Backdrop, float64(cam.Position.Z)))
 	pos := Vec3{X: f32(laneX(r.Runner.Lane())), Y: f32(r.Runner.Height()), Z: f32(r.Runner.Z())}
 	u.drawModelAt(BuildHero(heroPoseFor(r), r.Bald), pos)
-	chase := 2 + r.Chase*3
+	chase := copycatChase(r.Chase)
 	u.drawModelAt(BuildCopycat(chase), Vec3{X: pos.X, Y: 0, Z: pos.Z})
 }
 
@@ -430,10 +445,102 @@ func runTheme(f *campaign.Flow) campaign.Theme {
 }
 
 func heroPoseFor(r *gameplay.Run) HeroPose {
-	if r.Runner.Height() > 0.05 {
+	if r.Runner.Slamming() {
+		return PoseSlam
+	}
+	if r.Runner.Sliding() {
+		return PoseSlide
+	}
+	if r.Runner.Airborne() {
 		return PoseJump
 	}
 	return PoseRun
+}
+
+// copycatChase returns how far behind the hero, in meters, Copycat runs at
+// chase. chase runs from 0 (far, off-screen) to 1 (right behind), so a higher
+// chase means a smaller gap.
+func copycatChase(chase float64) float64 {
+	if chase < 0 {
+		chase = 0
+	}
+	if chase > 1 {
+		chase = 1
+	}
+	return 2 + (1-chase)*7
+}
+
+// bossHeroPose maps the boss fight's hero moves to a pose. The boss hero has
+// no slam, so a jump, a slide or the run covers every state.
+func bossHeroPose(b *gameplay.BossFight) HeroPose {
+	if b.Jumping() {
+		return PoseJump
+	}
+	if b.Sliding() {
+		return PoseSlide
+	}
+	return PoseRun
+}
+
+// telegraphCmds returns the arena overlay warning which lane Copycat will
+// attack and whether the attack comes low or high. A low attack marks the
+// floor to be jumped; a high attack marks a raised plane to be slid under.
+// While Copycat is vulnerable it returns nil: the crouch alone marks the
+// stomp window.
+func telegraphCmds(b *gameplay.BossFight) []Cmd {
+	if b.Vulnerable() {
+		return nil
+	}
+	x := laneX(float64(b.AttackLane()))
+	y := 0.02
+	if b.AttackKind() == gameplay.AttackHigh {
+		y = 1.2
+	}
+	return []Cmd{{
+		Shape: ShapePlane,
+		Pos:   v3(x, y, 0),
+		Size:  Size{X: 1.9, Z: 1.9},
+		Color: bossTelegraph,
+	}}
+}
+
+// sceneBackdrop returns the color the fade overlay blends a scene toward: the
+// themed backdrop behind a run, the salon dark behind the boss, or the flat
+// UI background on the 2D screens.
+func sceneBackdrop(f *campaign.Flow) Color {
+	if f.Scene() == campaign.ScenePlay || f.Scene() == campaign.ScenePause {
+		if f.Boss() != nil {
+			return bossDark
+		}
+		return Palette(runTheme(f)).Backdrop
+	}
+	return uiBackground
+}
+
+// advanceFade moves the scene fade by dt seconds. When scene changes it
+// covers the screen and then fades out over fadeDuration, revealing the new
+// scene from its backdrop color.
+func (u *UI) advanceFade(scene campaign.Scene, dt float64) {
+	if !u.fadeStarted || scene != u.fadeScene {
+		u.fadeStarted = true
+		u.fadeScene = scene
+		u.fadeCover = 1
+		return
+	}
+	u.fadeCover -= dt / fadeDuration
+	if u.fadeCover < 0 {
+		u.fadeCover = 0
+	}
+}
+
+// drawFade draws the full-screen scene fade overlay. cover = 1 hides the
+// scene behind back; cover = 0 draws nothing.
+func (u *UI) drawFade(w, h int, back Color) {
+	if u.fadeCover <= 0 {
+		return
+	}
+	back.A = uint8(math.Round(255 * u.fadeCover))
+	rl.DrawRectangle(0, 0, int32(w), int32(h), rlColor(back))
 }
 
 // drawLines lays out and draws the screen lines. center centers the block in

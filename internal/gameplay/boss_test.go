@@ -250,6 +250,35 @@ func TestBossMissedWindowDealsNoDamage(t *testing.T) {
 	}
 }
 
+func TestBossSlidingStartsAndEnds(t *testing.T) {
+	b := gameplay.NewBossFight(3)
+	b.Step(runner.Input{Slide: true}, bossDT)
+	if !b.Sliding() {
+		t.Fatalf("Sliding() = false right after a slide")
+	}
+	for i := 0; i < bossWaitSteps && b.Sliding(); i++ {
+		b.Step(runner.Input{}, bossDT)
+	}
+	if b.Sliding() {
+		t.Fatalf("Sliding() still true after the slide duration")
+	}
+}
+
+func TestBossSlidingEndsOnJump(t *testing.T) {
+	b := gameplay.NewBossFight(3)
+	b.Step(runner.Input{Slide: true}, bossDT)
+	if !b.Sliding() {
+		t.Fatalf("Sliding() = false right after a slide")
+	}
+	b.Step(runner.Input{Jump: true}, bossDT)
+	if b.Sliding() {
+		t.Fatalf("Sliding() still true after a jump")
+	}
+	if !b.Jumping() {
+		t.Fatalf("Jumping() = false after a jump")
+	}
+}
+
 func TestBossSameInputScriptGivesIdenticalStates(t *testing.T) {
 	b1 := gameplay.NewBossFight(3)
 	b2 := gameplay.NewBossFight(3)
@@ -279,6 +308,7 @@ type bossSnapshot struct {
 	Lives      int
 	HeroLane   int
 	Jumping    bool
+	Sliding    bool
 	AttackLane int
 	AttackKind gameplay.AttackKind
 	Vulnerable bool
@@ -291,6 +321,7 @@ func snapshot(b *gameplay.BossFight) bossSnapshot {
 		Lives:      b.Lives(),
 		HeroLane:   b.HeroLane(),
 		Jumping:    b.Jumping(),
+		Sliding:    b.Sliding(),
 		AttackLane: b.AttackLane(),
 		AttackKind: b.AttackKind(),
 		Vulnerable: b.Vulnerable(),
