@@ -214,8 +214,10 @@ type StoryKind int
 
 // The story cards the flow shows.
 const (
+	// StoryIntro is the card shown before level 1 on a new game.
+	StoryIntro StoryKind = iota
 	// StoryWorld2 is the card shown between worlds 1 and 2.
-	StoryWorld2 StoryKind = iota
+	StoryWorld2
 	// StoryWorld3 is the card shown between worlds 2 and 3.
 	StoryWorld3
 	// StoryEnding is the card shown after the boss is won.
@@ -646,7 +648,8 @@ func (f *Flow) handleMainMenu(a Action) {
 			f.continueGame()
 		case menuNewGame:
 			f.progress = NewProgress()
-			f.StartLevel(1)
+			f.scene = SceneStory
+			f.story = StoryIntro
 		case menuMap:
 			f.scene = SceneMap
 			f.mapSel = 0
@@ -795,12 +798,14 @@ func (f *Flow) handleLevelEnd(a Action) {
 	}
 }
 
-// handleStory continues past a world story card into the next world.
+// handleStory continues past a story card into the next level.
 func (f *Flow) handleStory(a Action) {
 	if a != ActionConfirm {
 		return
 	}
 	switch f.story {
+	case StoryIntro:
+		f.StartLevel(1)
 	case StoryWorld2:
 		f.StartLevel(4)
 	case StoryWorld3:

@@ -129,6 +129,7 @@ func TestTextsAuditAcrossPackages(t *testing.T) {
 			name: "internal/campaign/texts.go",
 			values: []any{
 				GameTitle,
+				TitleTagline,
 				MainMenuItems,
 				MapTitle,
 				MapLocked,
@@ -141,11 +142,15 @@ func TestTextsAuditAcrossPackages(t *testing.T) {
 				PauseTitle,
 				PauseHint,
 				LevelEndTitle,
+				LevelEndCombs,
+				LevelEndLivesLost,
+				LevelEndStomps,
 				LevelEndHint,
 				EndlessLevelEndTitle,
 				GameOverTitle,
 				GameOverEpitaph,
 				GameOverItems,
+				KeyHints,
 			},
 		},
 		{

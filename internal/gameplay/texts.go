@@ -53,7 +53,7 @@ var SnipLine = Line{
 // ChaseLine is shown when Copycat closes in and the chase begins.
 var ChaseLine = Line{
 	EN: "Copycat is close. Downald D blames the controller, the cat and the wind.",
-	UA: "Копікет уже близько. Downald D звинувачує контролер, кота і вітер.",
+	UA: "Копікет уже близько. Downald D звинувачує контролер, кота й вітер.",
 }
 
 // ShieldLine is shown when a hairspray shield absorbs a hit.
