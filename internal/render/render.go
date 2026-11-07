@@ -8,9 +8,10 @@ import (
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
-// Vec3 is a plain position or size in meters.
+// Vec3 is a plain position or size in meters. Its fields are float32 so
+// positions flow straight to and from raylib's Vector3.
 type Vec3 struct {
-	X, Y, Z float64
+	X, Y, Z float32
 }
 
 // Size is a plain size in meters. Which fields a shape reads is documented on
@@ -65,6 +66,13 @@ type Cam struct {
 	Height float64
 }
 
+// v3 builds a Vec3 from float64 coordinates. The corridor and arena builders
+// keep their layout math in float64 and convert to the command's float32
+// position only at the edge.
+func v3(x, y, z float64) Vec3 {
+	return Vec3{X: float32(x), Y: float32(y), Z: float32(z)}
+}
+
 // DrawCmds draws cs with raylib primitives in list order.
 func DrawCmds(cs []Cmd) {
 	for _, c := range cs {
@@ -77,12 +85,12 @@ func drawCmd(c Cmd) {
 	case ShapeBox:
 		rl.DrawCube(rlVec3(c.Pos), f32(c.Size.X), f32(c.Size.Y), f32(c.Size.Z), rlColor(c.Color))
 	case ShapeCylinder:
-		base := rlVec3(Vec3{X: c.Pos.X, Y: c.Pos.Y - c.Size.Y/2, Z: c.Pos.Z})
+		base := rlVec3(Vec3{X: c.Pos.X, Y: c.Pos.Y - f32(c.Size.Y/2), Z: c.Pos.Z})
 		rl.DrawCylinder(base, f32(c.Size.X), f32(c.Size.X), f32(c.Size.Y), 12, rlColor(c.Color))
 	case ShapeSphere:
 		rl.DrawSphere(rlVec3(c.Pos), f32(c.Size.X), rlColor(c.Color))
 	case ShapeCone:
-		base := rlVec3(Vec3{X: c.Pos.X, Y: c.Pos.Y - c.Size.Y/2, Z: c.Pos.Z})
+		base := rlVec3(Vec3{X: c.Pos.X, Y: c.Pos.Y - f32(c.Size.Y/2), Z: c.Pos.Z})
 		rl.DrawCylinder(base, 0, f32(c.Size.X), f32(c.Size.Y), 12, rlColor(c.Color))
 	case ShapePlane:
 		rl.DrawPlane(rlVec3(c.Pos), rl.Vector2{X: f32(c.Size.X), Y: f32(c.Size.Z)}, rlColor(c.Color))
@@ -90,7 +98,7 @@ func drawCmd(c Cmd) {
 }
 
 func rlVec3(v Vec3) rl.Vector3 {
-	return rl.Vector3{X: float32(v.X), Y: float32(v.Y), Z: float32(v.Z)}
+	return rl.Vector3{X: v.X, Y: v.Y, Z: v.Z}
 }
 
 func rlColor(c Color) rl.Color {
