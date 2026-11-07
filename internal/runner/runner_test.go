@@ -400,6 +400,153 @@ func TestFailureEventsStopForwardMotion(t *testing.T) {
 	}
 }
 
+func TestRestartResetsLaneHeightSpeedStopAndZ(t *testing.T) {
+	p := levelgen.Mangroves()
+	cfg := runner.DefaultConfig()
+	cfg.BaseSpeed = p.BaseSpeed
+
+	l := findLevel(t, p, func(l *levelgen.Level) bool {
+		bar, ok := firstForced(l)
+		if !ok {
+			return false
+		}
+		if (bar.Kind != levelgen.LowBarrier && bar.Kind != levelgen.HighBarrier) || bar.Lane != 1 {
+			return false
+		}
+		if bar.Z < 12 {
+			return false
+		}
+		// The 30 meters after the barrier must stay clear of anything a
+		// lane-1 hero can collide with: another lane-1 barrier or enemy,
+		// and pits (which span every lane).
+		windowEnd := bar.Z + barrierDepth + 30.0
+		for _, e := range forcedOf(l) {
+			if e.Z <= bar.Z {
+				continue
+			}
+			if e.Z >= windowEnd {
+				break
+			}
+			if e.Kind == levelgen.Pit || e.Lane == 1 {
+				return false
+			}
+		}
+		return true
+	})
+	bar, _ := firstForced(l)
+
+	r := runner.New(l, cfg)
+	dt := 1.0 / 60.0
+
+	// Move right to the outside lane.
+	for i := 0; i < 4000 && r.Lane() != 2; i++ {
+		r.Step(runner.Input{Right: true}, dt)
+	}
+	if r.Lane() != 2 {
+		t.Fatalf("never reached lane 2: Lane() = %v", r.Lane())
+	}
+
+	// Jump on lane 2 and wait until the hero leaves the ground.
+	jumped := false
+	for i := 0; i < 4000 && r.Height() <= 0; i++ {
+		if r.Lane() != 2 {
+			t.Fatalf("lane left 2 during the jump: Lane() = %v", r.Lane())
+		}
+		for _, ev := range r.Step(runner.Input{Jump: true}, dt) {
+			if ev == runner.EventJump {
+				jumped = true
+			}
+		}
+	}
+	if !jumped {
+		t.Fatalf("never jumped")
+	}
+	if r.Lane() != 2 {
+		t.Fatalf("lane left 2 during the jump: Lane() = %v", r.Lane())
+	}
+
+	// Land again.
+	for i := 0; i < 4000 && r.Height() > 0; i++ {
+		r.Step(runner.Input{}, dt)
+	}
+	if r.Height() != 0 {
+		t.Fatalf("never landed: Height() = %v", r.Height())
+	}
+
+	// Return to the center lane, then run into the lane-1 barrier.
+	for i := 0; i < 4000 && r.Lane() != 1; i++ {
+		r.Step(runner.Input{Left: true}, dt)
+	}
+	if r.Lane() != 1 {
+		t.Fatalf("never returned to lane 1: Lane() = %v", r.Lane())
+	}
+
+	hit := false
+	var hitZ float64
+	for i := 0; i < 4000; i++ {
+		for _, ev := range r.Step(runner.Input{}, dt) {
+			if ev == runner.EventHitBarrier {
+				hit = true
+				hitZ = r.Z()
+			}
+		}
+		if hit {
+			break
+		}
+	}
+	if !hit {
+		t.Fatalf("never hit lane-1 barrier %+v at z %v", bar, r.Z())
+	}
+	if r.Speed() != 0 {
+		t.Fatalf("Speed() = %v after EventHitBarrier, want 0", r.Speed())
+	}
+	for i := 0; i < 3; i++ {
+		r.Step(runner.Input{}, dt)
+	}
+	if r.Z() != hitZ {
+		t.Fatalf("Z moved after EventHitBarrier: %v -> %v", hitZ, r.Z())
+	}
+
+	startZ := bar.Z + barrierDepth + 0.1
+	r.Restart(startZ)
+
+	if r.Lane() != 1 {
+		t.Fatalf("Lane() = %v after Restart, want 1", r.Lane())
+	}
+	if r.Height() != 0 {
+		t.Fatalf("Height() = %v after Restart, want 0", r.Height())
+	}
+	if r.Speed() != cfg.BaseSpeed {
+		t.Fatalf("Speed() = %v after Restart, want %v", r.Speed(), cfg.BaseSpeed)
+	}
+	if r.Z() != startZ {
+		t.Fatalf("Z() = %v after Restart, want %v", r.Z(), startZ)
+	}
+
+	evs := r.Step(runner.Input{}, dt)
+	if r.Z() <= startZ {
+		t.Fatalf("Z() = %v after the first post-restart step, want > %v", r.Z(), startZ)
+	}
+	if r.Speed() <= 0 {
+		t.Fatalf("Speed() = %v after the first post-restart step, want > 0", r.Speed())
+	}
+	for _, ev := range evs {
+		if ev == runner.EventHitBarrier {
+			t.Fatalf("EventHitBarrier reported right after Restart at z %v", r.Z())
+		}
+	}
+
+	// Step about one second more; nothing behind startZ may collide again.
+	for i := 0; i < 60; i++ {
+		for _, ev := range r.Step(runner.Input{}, dt) {
+			switch ev {
+			case runner.EventHitBarrier, runner.EventHitEnemy, runner.EventFellInPit:
+				t.Fatalf("unexpected event %v after Restart at z %v", ev, r.Z())
+			}
+		}
+	}
+}
+
 func TestRampTransitionsRaiseAndLower(t *testing.T) {
 	cfg := runner.DefaultConfig()
 	l := findLevel(t, levelgen.Params{BaseSpeed: cfg.BaseSpeed, Length: 60, Density: 0}, func(l *levelgen.Level) bool {
