@@ -11,6 +11,7 @@ import (
 	"copycat/internal/campaign"
 	"copycat/internal/font"
 	"copycat/internal/gameplay"
+	"copycat/internal/levelgen"
 )
 
 // ScreenLine is one line of UI text: what it says, where it sits in the
@@ -31,12 +32,34 @@ type UI struct {
 	fadeCover   float64        // 1 hides the scene behind the fade, 0 shows it
 	fadeScene   campaign.Scene // scene the current fade started on
 	fadeStarted bool
+
+	caption     captionSnap
+	captionText string
+	captionLeft float64
+
+	introRun  *gameplay.Run
+	introBoss *gameplay.BossFight
+	introLeft float64
 }
 
 // NewUI returns a UI that draws its text with fnt. The font is read-only and
 // safe to share.
 func NewUI(fnt *font.Font) *UI {
 	return &UI{fnt: fnt, scale: uiScale}
+}
+
+// captionSnap holds the previous run or boss counters the caption layer
+// compares against, so each state transition earns exactly one caption.
+type captionSnap struct {
+	run  *gameplay.Run
+	boss *gameplay.BossFight
+
+	livesLost int
+	stomps    int
+	bald      bool
+	chase     float64
+	shield    int
+	phase     int
 }
 
 // The screen layout is described in the font's unscaled pixel grid; Draw
@@ -55,6 +78,15 @@ const (
 	// fadeDuration is how long a scene fade takes to reveal the new scene,
 	// in seconds.
 	fadeDuration = 0.25
+
+	// captionDuration is how long an in-play caption stays on screen, in
+	// seconds.
+	captionDuration = 3.0
+	// introDuration is how long the level intro card stays up, in seconds.
+	introDuration = 4.0
+	// captionChaseThreshold is the chase level the caption layer watches
+	// cross to announce that Copycat is close.
+	captionChaseThreshold = 0.5
 )
 
 // UI colors, drawn behind and over the screen text.
@@ -82,6 +114,8 @@ func (u *UI) Draw(f *campaign.Flow, w, h int) {
 	case campaign.ScenePlay:
 		u.drawScene(f)
 		u.drawLines(HUDLines(f), w, h, false)
+		u.drawCaption(f, w, h, dt)
+		u.drawIntro(f, w, h, dt)
 	case campaign.ScenePause:
 		u.drawScene(f)
 		u.drawLines(MenuLines(f), w, h, true)
@@ -100,6 +134,178 @@ func (u *UI) Draw(f *campaign.Flow, w, h int) {
 		u.drawLines(MenuLines(f), w, h, true)
 	}
 	u.drawFade(w, h, sceneBackdrop(f))
+}
+
+// captionOnChange compares the flow's current run or boss state with prev and
+// reports the one caption the transition earns, preferring life loss, then
+// stomp, snip, shield, chase and phase. It advances prev to the current state
+// and resets it when the run or boss pointer changes. The boss fight start
+// reports the first phase line.
+func captionOnChange(f *campaign.Flow, prev *captionSnap) (gameplay.Line, bool) {
+	r := f.Run()
+	b := f.Boss()
+
+	if r != prev.run || b != prev.boss {
+		prev.run = r
+		prev.boss = b
+		if b != nil {
+			prev.phase = b.Phase()
+			return gameplay.BossPhaseLines[0], true
+		}
+		if r == nil {
+			prev.livesLost = 0
+			prev.stomps = 0
+			prev.bald = false
+			prev.chase = 0
+			prev.shield = 0
+			prev.phase = 0
+			return gameplay.Line{}, false
+		}
+		prev.livesLost = r.LivesLost
+		prev.stomps = r.Stomps
+		prev.bald = r.Bald
+		prev.chase = r.Chase
+		prev.shield = r.ShieldHits
+		prev.phase = 0
+		return gameplay.Line{}, false
+	}
+
+	if b != nil {
+		if b.Phase() > prev.phase {
+			prev.phase = b.Phase()
+			return gameplay.BossPhaseLines[b.Phase()-1], true
+		}
+		prev.phase = b.Phase()
+		return gameplay.Line{}, false
+	}
+	if r == nil {
+		return gameplay.Line{}, false
+	}
+
+	line := gameplay.Line{}
+	ok := false
+	switch {
+	case r.LivesLost > prev.livesLost:
+		line, ok = gameplay.CauseLines[r.Cause], true
+	case r.Stomps > prev.stomps:
+		line, ok = gameplay.StompedMudskipper, true
+	case r.Bald && !prev.bald:
+		line, ok = gameplay.SnipLine, true
+	case r.ShieldHits < prev.shield:
+		line, ok = gameplay.ShieldLine, true
+	case r.Chase > captionChaseThreshold && prev.chase <= captionChaseThreshold:
+		line, ok = gameplay.ChaseLine, true
+	}
+
+	prev.livesLost = r.LivesLost
+	prev.stomps = r.Stomps
+	prev.bald = r.Bald
+	prev.chase = r.Chase
+	prev.shield = r.ShieldHits
+	return line, ok
+}
+
+// drawCaption reports one caption per state transition and draws the active
+// caption at the bottom of the screen while it lasts.
+func (u *UI) drawCaption(f *campaign.Flow, w, h int, dt float64) {
+	if f.Run() != u.caption.run || f.Boss() != u.caption.boss {
+		u.captionText = ""
+		u.captionLeft = 0
+	}
+	if line, ok := captionOnChange(f, &u.caption); ok {
+		u.captionText = hudText(f, line)
+		u.captionLeft = captionDuration
+	}
+	if u.captionLeft <= 0 {
+		return
+	}
+	u.drawBottomLines(storyWrap(u.captionText, 0, 0, uiLineGap), w, h)
+	u.captionLeft -= dt
+	if u.captionLeft < 0 {
+		u.captionLeft = 0
+	}
+}
+
+// drawIntro shows the level intro card while its timer lasts. The timer
+// restarts whenever the active run or boss fight changes.
+func (u *UI) drawIntro(f *campaign.Flow, w, h int, dt float64) {
+	r, b := f.Run(), f.Boss()
+	if r != u.introRun || b != u.introBoss {
+		u.introRun = r
+		u.introBoss = b
+		u.introLeft = introDuration
+	}
+	if u.introLeft <= 0 {
+		return
+	}
+	u.drawLines(introLines(f), w, h, true)
+	u.introLeft -= dt
+	if u.introLeft < 0 {
+		u.introLeft = 0
+	}
+}
+
+// introLines returns the level intro card: the level's name and one
+// deterministically chosen loading tip, plus the control hints on campaign
+// level 1. Endless runs use the endless name and pick the tip by the level's
+// seed.
+func introLines(f *campaign.Flow) []ScreenLine {
+	var name string
+	var tipIdx uint64
+	levelID := 0
+	if f.Endless() {
+		name = levelText(f, levelgen.EndlessName)
+		if r := f.Run(); r != nil {
+			tipIdx = r.Level.Seed()
+		}
+	} else if lv, ok := f.CurrentLevel(); ok {
+		name = textFor(f, campaign.LevelNames[lv.ID-1])
+		tipIdx = uint64(lv.ID)
+		levelID = lv.ID
+	} else {
+		return nil
+	}
+	lines := []ScreenLine{
+		uiLine(name, uiMarginX, uiMarginY, false),
+		uiLine(textFor(f, campaign.LoadingTips[tipIdx%uint64(len(campaign.LoadingTips))]), uiMarginX+uiIndent, uiMarginY+uiLineGap, false),
+	}
+	if levelID == 1 {
+		for i, hint := range campaign.KeyHints {
+			lines = append(lines, uiLine(textFor(f, hint), uiMarginX+uiIndent, uiMarginY+(i+2)*uiLineGap, false))
+		}
+	}
+	return lines
+}
+
+// levelText returns the levelgen line for the flow's language.
+func levelText(f *campaign.Flow, l levelgen.Line) string {
+	if f.Settings().Language == campaign.LanguageUkrainian {
+		return l.UA
+	}
+	return l.EN
+}
+
+// drawBottomLines draws lines anchored to the bottom center of the window,
+// used for the in-play captions so they never cover the top-anchored HUD.
+func (u *UI) drawBottomLines(lines []ScreenLine, w, h int) {
+	if len(lines) == 0 {
+		return
+	}
+	scale := u.scale
+	if scale < 1 {
+		scale = 1
+	}
+	ox := (w - u.blockWidth(lines)*scale) / 2
+	if ox < 0 {
+		ox = 0
+	}
+	oy := h - u.blockHeight(lines)*scale - uiMarginY*scale
+	if oy < 0 {
+		oy = 0
+	}
+	for _, l := range lines {
+		u.drawLine(l, ox+l.X*scale, oy+l.Y*scale)
+	}
 }
 
 // MenuLines returns the plain text of the current menu screen: the language
@@ -201,10 +407,14 @@ func settingsLines(f *campaign.Flow) []ScreenLine {
 }
 
 func pauseLines(f *campaign.Flow) []ScreenLine {
-	return []ScreenLine{
+	lines := []ScreenLine{
 		uiLine(textFor(f, campaign.PauseTitle), uiMarginX, uiMarginY, false),
 		uiLine(textFor(f, campaign.PauseHint), uiMarginX+uiIndent, uiMarginY+uiLineGap, false),
 	}
+	for i, hint := range campaign.KeyHints {
+		lines = append(lines, uiLine(textFor(f, hint), uiMarginX+uiIndent, uiMarginY+(i+2)*uiLineGap, false))
+	}
+	return lines
 }
 
 func levelEndLines(f *campaign.Flow) []ScreenLine {
@@ -213,12 +423,22 @@ func levelEndLines(f *campaign.Flow) []ScreenLine {
 		title = campaign.EndlessLevelEndTitle
 	}
 	cause := gameplay.CauseNone
+	combs, livesLost, stomps := 0, 0, 0
 	if r := f.Run(); r != nil {
 		cause = r.Cause
+		combs = r.TotalCombs
+		livesLost = r.LivesLost
+		stomps = r.Stomps
 	}
 	lines := []ScreenLine{uiLine(textFor(f, title), uiMarginX, uiMarginY, false)}
 	lines = append(lines, uiLine(textFor(f, campaign.MedalsOfShame[cause]), uiMarginX+uiIndent, uiMarginY+uiLineGap, false))
 	y := uiMarginY + 2*uiLineGap
+	lines = append(lines, uiLine(fmt.Sprintf("%s: %d", textFor(f, campaign.LevelEndCombs), combs), uiMarginX+uiIndent, y, false))
+	y += uiLineGap
+	lines = append(lines, uiLine(fmt.Sprintf("%s: %d", textFor(f, campaign.LevelEndLivesLost), livesLost), uiMarginX+uiIndent, y, false))
+	y += uiLineGap
+	lines = append(lines, uiLine(fmt.Sprintf("%s: %d", textFor(f, campaign.LevelEndStomps), stomps), uiMarginX+uiIndent, y, false))
+	y += uiLineGap
 	if f.Endless() {
 		if r := f.Run(); r != nil {
 			lines = append(lines, uiLine(fmt.Sprintf("%s: %.0f m", hudText(f, gameplay.HUDDistance), r.Runner.Z()), uiMarginX+uiIndent, y, false))
