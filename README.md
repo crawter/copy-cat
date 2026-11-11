@@ -5,12 +5,21 @@ Hair Raid is a small but complete 3D corridor runner that sits between Crash Ban
 ## Requirements
 
 - Go 1.22 or newer
-- A C compiler, because raylib links through cgo
+- A C compiler, because raylib links through cgo:
+  - Windows: MinGW-w64 on the PATH
+  - Linux: X11 and OpenGL development packages
+  - macOS: Xcode Command Line Tools
 - A desktop operating system (Windows, macOS, or Linux)
 
 ## Build and run
 
-Build everything and run the game:
+Fetch the dependencies first; this writes go.sum, which is not committed:
+
+```
+go mod tidy
+```
+
+Then build everything and run the game:
 
 ```
 go build ./...
@@ -37,8 +46,8 @@ go test ./...
 - Arrow keys — switch lanes left and right
 - ArrowUp or Space — jump
 - ArrowDown — slide; press it in the air to slam down
-- P — pause during a run
-- Q — quit
+- P — pause and resume during a run
+- Q — quit immediately, without confirmation
 
 In menus:
 
@@ -52,6 +61,7 @@ In menus:
 - A — jump and confirm
 - B — slide and go back
 - Start — pause
+- Select — quit
 
 ## What's in the game
 
