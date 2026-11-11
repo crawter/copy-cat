@@ -1,11 +1,15 @@
 package render
 
 import (
+	"fmt"
+	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"copycat/internal/campaign"
+	"copycat/internal/font"
 	"copycat/internal/gameplay"
 	"copycat/internal/levelgen"
 	"copycat/internal/runner"
@@ -28,6 +32,15 @@ func TestMenuLinesEverySceneYieldsLines(t *testing.T) {
 			name: "main menu",
 			flow: func(t *testing.T) *campaign.Flow {
 				return campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+			},
+		},
+		{
+			name: "new game confirmation",
+			flow: func(t *testing.T) *campaign.Flow {
+				f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+				f.Handle(campaign.ActionDown) // New Game
+				f.Handle(campaign.ActionConfirm)
+				return f
 			},
 		},
 		{
@@ -255,6 +268,464 @@ func TestStoryLinesWrapLongParagraph(t *testing.T) {
 	}
 }
 
+func TestMainMenuLogoAndTagline(t *testing.T) {
+	f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	lines := MenuLines(f)
+	if len(lines) < 2+len(campaign.MainMenuItems) {
+		t.Fatalf("main menu lines = %d, want at least %d", len(lines), 2+len(campaign.MainMenuItems))
+	}
+	if got, want := lines[0].Text, textFor(f, campaign.GameTitle); got != want {
+		t.Fatalf("logo text = %q, want %q", got, want)
+	}
+	if got, want := lines[1].Text, textFor(f, campaign.TitleTagline); got != want {
+		t.Fatalf("tagline text = %q, want %q", got, want)
+	}
+	if lines[0].Scale <= 1 {
+		t.Fatalf("logo scale = %d, want > 1", lines[0].Scale)
+	}
+	if lines[1].Scale <= 1 || lines[1].Scale >= lines[0].Scale {
+		t.Fatalf("tagline scale = %d, want between 1 and logo scale %d", lines[1].Scale, lines[0].Scale)
+	}
+	if lines[1].Y <= lines[0].Y {
+		t.Fatalf("tagline y = %d, must be below logo y = %d", lines[1].Y, lines[0].Y)
+	}
+	if got, want := lines[2].Text, textFor(f, campaign.MainMenuItems[0]); got != want {
+		t.Fatalf("first menu item = %q, want %q", got, want)
+	}
+	if lines[2].Y <= lines[1].Y {
+		t.Fatalf("first menu item y = %d, must be below tagline y = %d", lines[2].Y, lines[1].Y)
+	}
+}
+
+func TestMainMenuScaledLayoutKeepsMenuBelowLogo(t *testing.T) {
+	f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	lines := MenuLines(f)
+	tagline := lines[1]
+	taglineBottom := tagline.Y + uiLineGap*tagline.Scale
+	for _, l := range lines[2:] {
+		if l.Y < taglineBottom {
+			t.Fatalf("menu item %q y = %d, above tagline bottom %d", l.Text, l.Y, taglineBottom)
+		}
+	}
+}
+
+func TestLevelIntroLines(t *testing.T) {
+	f := newGameFlow(t)
+	lines := LevelIntroLines(f)
+	if len(lines) != 2 {
+		t.Fatalf("level intro lines = %d, want 2", len(lines))
+	}
+	lv, ok := f.CurrentLevel()
+	if !ok {
+		t.Fatal("no current level")
+	}
+	if got, want := lines[0].Text, fmt.Sprintf("%s %d", textFor(f, uiLevel), lv.ID); got != want {
+		t.Fatalf("level number line = %q, want %q", got, want)
+	}
+	if got, want := lines[1].Text, textFor(f, campaign.LevelNames[lv.ID-1]); got != want {
+		t.Fatalf("level name line = %q, want %q", got, want)
+	}
+}
+
+func TestLevelIntroEndless(t *testing.T) {
+	f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	f.StartEndless(7)
+	lines := LevelIntroLines(f)
+	if len(lines) != 1 {
+		t.Fatalf("endless intro lines = %d, want 1", len(lines))
+	}
+	if got, want := lines[0].Text, textFor(f, uiEndless); got != want {
+		t.Fatalf("endless intro = %q, want %q", got, want)
+	}
+}
+
+func TestLevelEndShowsStats(t *testing.T) {
+	f := newGameFlow(t)
+	stepToScene(t, f, campaign.SceneLevelEnd)
+	r := f.Run()
+	if r == nil {
+		t.Fatal("no run at level end")
+	}
+	r.TotalCombs = 7
+	r.LivesLost = 2
+	r.Stomps = 3
+
+	text := joinLines(MenuLines(f))
+	for _, want := range []string{
+		textFor(f, uiTotalCombs),
+		textFor(f, uiLivesLost),
+		textFor(f, uiStomps),
+		hudText(f, gameplay.HUDDistance),
+		"7", "2", "3",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("level end missing %q in %q", want, text)
+		}
+	}
+}
+
+func TestHeroPoseForMapsRunnerStates(t *testing.T) {
+	cases := []struct {
+		name                                 string
+		slamming, sliding, airborne, landing bool
+		speed                                float64
+		want                                 HeroPose
+	}{
+		{name: "run", speed: 8, want: PoseRun},
+		{name: "sprint threshold", speed: 12, want: PoseSprint},
+		{name: "sprint", speed: 16, want: PoseSprint},
+		{name: "jump", airborne: true, speed: 8, want: PoseJump},
+		{name: "slide", sliding: true, speed: 8, want: PoseSlide},
+		{name: "slam", slamming: true, airborne: true, speed: 8, want: PoseStomp},
+		{name: "landing", landing: true, speed: 8, want: PoseLanding},
+	}
+	for _, tc := range cases {
+		if got := heroPoseFor(tc.slamming, tc.sliding, tc.airborne, tc.landing, tc.speed); got != tc.want {
+			t.Fatalf("%s: pose = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestBuildBossTelegraphHighlightsAnnouncedLane(t *testing.T) {
+	b := gameplay.NewBossFight(3)
+	b.Step(runner.Input{}, testDT) // announce the first attack
+	if b.Vulnerable() {
+		t.Fatal("boss became vulnerable before announcing an attack")
+	}
+	cs := BuildBossTelegraph(b)
+	if len(cs) == 0 {
+		t.Fatal("no telegraph commands after announcement")
+	}
+	wantX := laneX(float64(b.AttackLane()))
+	for _, c := range cs {
+		if c.Shape != ShapePlane {
+			t.Fatalf("telegraph uses non-plane shape %v", c.Shape)
+		}
+		if math.Abs(float64(c.Pos.X)-wantX) > 0.01 {
+			t.Fatalf("telegraph x = %v, want lane %d x %v", c.Pos.X, b.AttackLane(), wantX)
+		}
+	}
+}
+
+func TestBuildBossTelegraphNilWhenNoTelegraph(t *testing.T) {
+	if got := BuildBossTelegraph(nil); got != nil {
+		t.Fatalf("nil boss telegraph = %v, want nil", got)
+	}
+
+	b := gameplay.NewBossFight(3)
+	for i := 0; i < 200 && !b.Vulnerable(); i++ {
+		b.Step(runner.Input{}, testDT)
+	}
+	if !b.Vulnerable() {
+		t.Fatal("boss never became vulnerable")
+	}
+	if got := BuildBossTelegraph(b); got != nil {
+		t.Fatalf("vulnerable boss telegraph = %v, want nil", got)
+	}
+}
+
+func TestLandingBurstFiresOnLandingNotOnStomp(t *testing.T) {
+	f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	pos := Vec3{}
+
+	// A hero landing: an empty level lets a jump arc start and end cleanly.
+	flat := levelgen.New(1, levelgen.Params{BaseSpeed: 8, Length: 30})
+	run := gameplay.NewRun(runner.New(flat, runner.DefaultConfig()), flat, 3)
+	u := NewUI(font.New())
+
+	u.updateRunOverlays(f, run, pos) // grounded first frame
+	if hasBurst(u, BuildLandingBurst()) {
+		t.Fatal("landing burst spawned on the first grounded frame")
+	}
+
+	run.Step(runner.Input{Jump: true}, testDT)
+	u.updateRunOverlays(f, run, pos)
+	if !run.Runner.Airborne() {
+		t.Fatal("hero did not become airborne")
+	}
+	if hasBurst(u, BuildLandingBurst()) {
+		t.Fatal("landing burst spawned on takeoff")
+	}
+
+	for i := 0; i < 200 && run.Runner.Airborne(); i++ {
+		run.Step(runner.Input{}, testDT)
+		u.updateRunOverlays(f, run, pos)
+	}
+	if run.Runner.Airborne() {
+		t.Fatal("hero never landed")
+	}
+	if !hasBurst(u, BuildLandingBurst()) {
+		t.Fatal("landing burst not spawned on hero landing")
+	}
+
+	// An enemy stomp keeps the hero airborne, so it must not fire the landing
+	// burst. Search for a deterministic stomp that stays airborne.
+	assertStompDoesNotFireLanding(t, f)
+}
+
+// assertStompDoesNotFireLanding finds a level where a jump lands on an enemy
+// while the hero is still airborne, and pins that updateRunOverlays does not
+// treat the stomp as a landing.
+func assertStompDoesNotFireLanding(t *testing.T, f *campaign.Flow) {
+	t.Helper()
+	for seed := uint64(1); seed <= 100; seed++ {
+		l := levelgen.New(seed, levelgen.Params{BaseSpeed: 8, Length: 40, Density: 0.6})
+		for _, e := range l.Elements(8, 28) {
+			if e.Kind != levelgen.Enemy || e.Lane != 1 {
+				continue
+			}
+			for jumpAt := e.Z - 4.0; jumpAt <= e.Z-1.0; jumpAt += 0.25 {
+				u := NewUI(font.New())
+				run := gameplay.NewRun(runner.New(l, runner.DefaultConfig()), l, 3)
+				u.updateRunOverlays(f, run, Vec3{})
+
+				for i := 0; i < 400 && run.State == gameplay.StateRunning && run.Runner.Z() < jumpAt; i++ {
+					run.Step(runner.Input{}, testDT)
+					u.updateRunOverlays(f, run, Vec3{})
+				}
+				if run.State != gameplay.StateRunning {
+					continue
+				}
+
+				run.Step(runner.Input{Jump: true}, testDT)
+				u.updateRunOverlays(f, run, Vec3{})
+				if !run.Runner.Airborne() {
+					continue
+				}
+				if hasBurst(u, BuildLandingBurst()) {
+					t.Fatal("landing burst spawned on takeoff")
+				}
+
+				for i := 0; i < 200 && run.State == gameplay.StateRunning; i++ {
+					out := run.Step(runner.Input{}, testDT)
+					u.updateRunOverlays(f, run, Vec3{})
+					if !hasOutcome(out, gameplay.OutcomeStomp) {
+						if !run.Runner.Airborne() {
+							break
+						}
+						continue
+					}
+					if !run.Runner.Airborne() {
+						break // stomp and landing coincided; keep searching
+					}
+					if hasBurst(u, BuildLandingBurst()) {
+						t.Fatal("landing burst fired at an enemy stomp")
+					}
+					return
+				}
+			}
+		}
+	}
+	t.Fatal("no airborne enemy stomp found within 100 seeds")
+}
+
+func TestTransitionsIncludeFadeSlideZoom(t *testing.T) {
+	kinds := transitionKinds()
+	got := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		got[k] = true
+	}
+	for _, want := range []string{"fade", "slide", "zoom"} {
+		if !got[want] {
+			t.Fatalf("transition kinds %v missing %q", kinds, want)
+		}
+	}
+}
+
+func TestSlideAndZoomSettle(t *testing.T) {
+	x, y := slideOffset(0, sceneTransitionDuration)
+	if x <= 0 {
+		t.Fatalf("slide at start = %d, want a visible entry offset", x)
+	}
+	if y != 0 {
+		t.Fatalf("slide y at start = %d, want 0", y)
+	}
+	if z := zoomScale(0, sceneTransitionDuration); z <= 1 {
+		t.Fatalf("zoom at start = %v, want > 1", z)
+	}
+
+	x, y = slideOffset(sceneTransitionDuration, sceneTransitionDuration)
+	if x != 0 || y != 0 {
+		t.Fatalf("slide after settle = (%d, %d), want (0, 0)", x, y)
+	}
+	if z := zoomScale(sceneTransitionDuration, sceneTransitionDuration); math.Abs(z-1) > 1e-9 {
+		t.Fatalf("zoom after settle = %v, want 1", z)
+	}
+}
+
+func TestRunOverlaysSpawnStompCheckpointAndSlideBursts(t *testing.T) {
+	f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	flat := levelgen.New(1, levelgen.Params{BaseSpeed: 8, Length: 30})
+	run := gameplay.NewRun(runner.New(flat, runner.DefaultConfig()), flat, 3)
+	u := NewUI(font.New())
+
+	u.updateRunOverlays(f, run, Vec3{}) // baseline
+	run.Stomps++
+	run.CheckpointZ = 5
+	u.updateRunOverlays(f, run, Vec3{})
+
+	if !hasBurst(u, BuildStompBurst()) {
+		t.Fatal("stomp burst not spawned on stomp")
+	}
+	if !hasBurst(u, BuildCheckpointShine()) {
+		t.Fatal("checkpoint shine not spawned on checkpoint change")
+	}
+
+	run.Step(runner.Input{Slide: true}, testDT)
+	u.updateRunOverlays(f, run, Vec3{})
+	if !run.Runner.Sliding() {
+		t.Fatal("hero did not start sliding")
+	}
+	if !hasBurst(u, BuildSlideSparks()) {
+		t.Fatal("slide sparks not spawned on slide")
+	}
+}
+
+func TestBossOverlaysSpawnHitBurst(t *testing.T) {
+	b := gameplay.NewBossFight(3)
+	u := NewUI(font.New())
+	u.updateBossOverlays(b, Vec3{})
+
+	for i := 0; i < 120 && b.Lives() == 3; i++ {
+		b.Step(runner.Input{}, testDT)
+	}
+	if b.Lives() == 3 {
+		t.Fatal("boss never landed a hit")
+	}
+	u.updateBossOverlays(b, Vec3{})
+	if !hasBurst(u, BuildBossHitBurst()) {
+		t.Fatal("boss hit burst not spawned on boss hit")
+	}
+}
+
+func TestPauseLinesEntriesAndHighlight(t *testing.T) {
+	f := newGameFlow(t)
+	f.Handle(campaign.ActionPause)
+	if f.Scene() != campaign.ScenePause {
+		t.Fatalf("scene = %v, want ScenePause", f.Scene())
+	}
+
+	lines := MenuLines(f)
+	if len(lines) < 2+len(campaign.PauseItems) {
+		t.Fatalf("pause lines = %d, want at least %d", len(lines), 2+len(campaign.PauseItems))
+	}
+	if got, want := highlighted(t, lines).Text, textFor(f, campaign.PauseItems[0]); got != want {
+		t.Fatalf("pause highlight = %q, want %q", got, want)
+	}
+	for i, item := range campaign.PauseItems {
+		if got, want := lines[2+i].Text, textFor(f, item); got != want {
+			t.Fatalf("pause item %d = %q, want %q", i, got, want)
+		}
+	}
+
+	f.Handle(campaign.ActionDown)
+	if got, want := highlighted(t, MenuLines(f)).Text, textFor(f, campaign.PauseItems[1]); got != want {
+		t.Fatalf("pause highlight after down = %q, want %q", got, want)
+	}
+	f.Handle(campaign.ActionDown)
+	if got, want := highlighted(t, MenuLines(f)).Text, textFor(f, campaign.PauseItems[2]); got != want {
+		t.Fatalf("pause highlight after two downs = %q, want %q", got, want)
+	}
+}
+
+func TestNewGameConfirmLines(t *testing.T) {
+	f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	f.Handle(campaign.ActionDown) // New Game
+	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.SceneNewGameConfirm {
+		t.Fatalf("scene = %v, want SceneNewGameConfirm", f.Scene())
+	}
+
+	lines := MenuLines(f)
+	if got, want := len(lines), 1+len(campaign.NewGameConfirmItems); got != want {
+		t.Fatalf("confirm lines = %d, want %d", got, want)
+	}
+	if got, want := lines[0].Text, textFor(f, campaign.NewGameConfirmTitle); got != want {
+		t.Fatalf("confirm title = %q, want %q", got, want)
+	}
+	for i, item := range campaign.NewGameConfirmItems {
+		if got, want := lines[1+i].Text, textFor(f, item); got != want {
+			t.Fatalf("confirm item %d = %q, want %q", i, got, want)
+		}
+	}
+	if got, want := highlighted(t, lines).Text, textFor(f, campaign.NewGameConfirmItems[f.MenuIndex()]); got != want {
+		t.Fatalf("confirm highlight = %q, want %q", got, want)
+	}
+}
+
+func TestSettingsShowVolumePercentages(t *testing.T) {
+	f := settingsFlow(t)
+	text := joinLines(MenuLines(f))
+	if !strings.Contains(text, "100%") {
+		t.Fatalf("settings lines missing 100%%: %q", text)
+	}
+
+	f.Handle(campaign.ActionLeft) // music 100% -> 90%
+	if got := joinLines(MenuLines(f)); !strings.Contains(got, "90%") {
+		t.Fatalf("settings lines missing 90%% after music down: %q", got)
+	}
+}
+
+func TestVolumeTextPercentage(t *testing.T) {
+	for _, tc := range []struct {
+		in   float64
+		want string
+	}{
+		{1, "100%"},
+		{0.8, "80%"},
+		{0.05, "5%"},
+		{0, "0%"},
+	} {
+		if got := volumeText(tc.in); got != tc.want {
+			t.Errorf("volumeText(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestVolumeBarGeometry(t *testing.T) {
+	bar := volumeBar(18, 0.8)
+	if bar.X != uiMarginX+uiIndent {
+		t.Errorf("bar X = %d, want %d", bar.X, uiMarginX+uiIndent)
+	}
+	if bar.Y != 18+uiLineGap {
+		t.Errorf("bar Y = %d, want %d", bar.Y, 18+uiLineGap)
+	}
+	if bar.Width != volumeBarWidth || bar.Height != volumeBarHeight {
+		t.Errorf("bar size = %dx%d, want %dx%d", bar.Width, bar.Height, volumeBarWidth, volumeBarHeight)
+	}
+	if bar.Fill != 0.8 {
+		t.Errorf("bar Fill = %v, want 0.8", bar.Fill)
+	}
+	if got := volumeBar(0, -1).Fill; got != 0 {
+		t.Errorf("negative fraction clamped to %v, want 0", got)
+	}
+	if got := volumeBar(0, 2).Fill; got != 1 {
+		t.Errorf("oversized fraction clamped to %v, want 1", got)
+	}
+}
+
+func TestLogoOffsetChangesOverTime(t *testing.T) {
+	first := logoOffset(0)
+	changed := false
+	for step := 1; step <= 200; step++ {
+		if logoOffset(float64(step)*0.05) != first {
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		t.Fatalf("logoOffset did not change over time (first = %d)", first)
+	}
+
+	amplitude := int(logoBobAmplitude)
+	for _, clock := range []float64{0, 0.1, 0.5, 1, 3, 10} {
+		off := logoOffset(clock)
+		if off < -amplitude || off > amplitude {
+			t.Fatalf("logoOffset(%v) = %d outside ±%d", clock, off, amplitude)
+		}
+	}
+}
+
 // --- helpers ---
 
 func ukrainianSettings() campaign.Settings {
@@ -278,6 +749,11 @@ func newGameFlow(t *testing.T) *campaign.Flow {
 	t.Helper()
 	f := campaign.NewFlow(flatCampaign(), campaign.DefaultSettings(), campaign.NewProgress(), false)
 	f.Handle(campaign.ActionDown) // New Game
+	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.SceneNewGameConfirm {
+		t.Fatalf("scene = %v, want SceneNewGameConfirm", f.Scene())
+	}
+	f.Handle(campaign.ActionUp) // Yes
 	f.Handle(campaign.ActionConfirm)
 	if f.Scene() != campaign.SceneStory {
 		t.Fatalf("scene = %v, want SceneStory", f.Scene())
@@ -319,6 +795,11 @@ func gameOverFlow(t *testing.T) *campaign.Flow {
 	c, pit := pitCampaign(t)
 	f := campaign.NewFlow(c, campaign.DefaultSettings(), campaign.NewProgress(), false)
 	f.Handle(campaign.ActionDown) // New Game
+	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.SceneNewGameConfirm {
+		t.Fatalf("scene = %v, want SceneNewGameConfirm", f.Scene())
+	}
+	f.Handle(campaign.ActionUp) // Yes
 	f.Handle(campaign.ActionConfirm)
 	if f.Scene() != campaign.SceneStory {
 		t.Fatalf("scene = %v, want SceneStory", f.Scene())
@@ -474,6 +955,24 @@ func joinLines(lines []ScreenLine) string {
 func containsLine(lines []ScreenLine, text string) bool {
 	for _, l := range lines {
 		if l.Text == text {
+			return true
+		}
+	}
+	return false
+}
+
+func hasBurst(u *UI, want []Cmd) bool {
+	for _, b := range u.bursts {
+		if reflect.DeepEqual(b.cmds, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOutcome(out []gameplay.Outcome, want gameplay.Outcome) bool {
+	for _, o := range out {
+		if o == want {
 			return true
 		}
 	}

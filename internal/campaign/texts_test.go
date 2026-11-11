@@ -17,6 +17,7 @@ func allLines() []Line {
 		LanguageUkrainianName,
 		PauseTitle,
 		PauseHint,
+		NewGameConfirmTitle,
 		LevelEndTitle,
 		LevelEndHint,
 		EndlessLevelEndTitle,
@@ -24,8 +25,10 @@ func allLines() []Line {
 		GameOverEpitaph,
 	}
 	lines = append(lines, MainMenuItems...)
+	lines = append(lines, NewGameConfirmItems...)
 	lines = append(lines, LevelNames...)
 	lines = append(lines, SettingsItems...)
+	lines = append(lines, PauseItems...)
 	lines = append(lines, GameOverItems...)
 	return lines
 }
@@ -86,5 +89,11 @@ func TestMenuItemCounts(t *testing.T) {
 	}
 	if len(GameOverItems) != 2 {
 		t.Errorf("len(GameOverItems) = %d, want 2", len(GameOverItems))
+	}
+	if len(PauseItems) != 3 {
+		t.Errorf("len(PauseItems) = %d, want 3", len(PauseItems))
+	}
+	if len(NewGameConfirmItems) != 2 {
+		t.Errorf("len(NewGameConfirmItems) = %d, want 2", len(NewGameConfirmItems))
 	}
 }
