@@ -69,6 +69,36 @@ func TestHeroPosesDiffer(t *testing.T) {
 	}
 }
 
+func TestBuildHeroUsesRoundedParts(t *testing.T) {
+	for _, pose := range heroPoses {
+		cs := BuildHero(pose, false)
+		if cmdsHaveShape(cs, ShapeBox) {
+			t.Fatalf("pose %v: rounded hero still uses a box", pose)
+		}
+		for _, want := range []Shape{ShapeCylinder, ShapeSphere, ShapeCone} {
+			if !cmdsHaveShape(cs, want) {
+				t.Fatalf("pose %v: rounded hero missing shape %v", pose, want)
+			}
+		}
+	}
+}
+
+func TestBuildHeroAtAnimatesRun(t *testing.T) {
+	a := BuildHeroAt(PoseRun, false, 0)
+	b := BuildHeroAt(PoseRun, false, 0.125)
+	c := BuildHeroAt(PoseRun, false, 0.25)
+	if reflect.DeepEqual(a, b) || reflect.DeepEqual(a, c) || reflect.DeepEqual(b, c) {
+		t.Fatal("run pose does not animate over time")
+	}
+	if !reflect.DeepEqual(a, BuildHero(PoseRun, false)) {
+		t.Fatal("BuildHero does not match the first animation frame")
+	}
+	// Animation time wraps like a phase: a whole cycle repeats.
+	if !reflect.DeepEqual(b, BuildHeroAt(PoseRun, false, 1.125)) {
+		t.Fatal("animation time does not wrap to the phase")
+	}
+}
+
 func TestBuildEnemyCoversAllSpecies(t *testing.T) {
 	cases := []struct {
 		theme campaign.Theme
@@ -142,6 +172,7 @@ func TestModelsUseOnlyPrimitiveShapes(t *testing.T) {
 	lists := [][]Cmd{
 		BuildHero(PoseRun, false),
 		BuildHero(PoseSlide, true),
+		BuildHeroAt(PoseRun, false, 0.25),
 		BuildEnemy(campaign.ThemeMangroves, Vec3{Z: 0}),
 		BuildEnemy(campaign.ThemeHarbor, Vec3{Z: 0}),
 		BuildEnemy(campaign.ThemeHarbor, Vec3{Z: 1}),
@@ -166,6 +197,15 @@ func TestModelsUseOnlyPrimitiveShapes(t *testing.T) {
 func cmdsHaveColor(cs []Cmd, col Color) bool {
 	for _, c := range cs {
 		if c.Color == col {
+			return true
+		}
+	}
+	return false
+}
+
+func cmdsHaveShape(cs []Cmd, shape Shape) bool {
+	for _, c := range cs {
+		if c.Shape == shape {
 			return true
 		}
 	}

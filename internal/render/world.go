@@ -34,6 +34,11 @@ const (
 	maxElementSpan = 8.0
 	floorTileLen   = 2.0
 	propSpacing    = 6.0
+
+	// fogNear and fogFar are the Z distances, in meters, where corridor fog
+	// starts and where it fully reaches the backdrop color.
+	fogNear = 6.0
+	fogFar  = 38.0
 )
 
 // laneX returns the x offset, in meters, of a lane index in [0, 2].
@@ -71,6 +76,33 @@ func BuildWorld(l *levelgen.Level, theme campaign.Theme, cam Cam) []Cmd {
 		cam:   cam,
 	}
 	return b.build()
+}
+
+// ApplyFog returns cs with each command's color blended toward the theme
+// backdrop by its Z distance from cam.Z. Commands near the camera keep their
+// colors; commands at or beyond fogFar are fully backdrop-colored. It copies
+// cs, so BuildWorld's exact palette colors stay available to callers.
+func ApplyFog(cs []Cmd, cam Cam, pal ThemePalette) []Cmd {
+	out := make([]Cmd, len(cs))
+	copy(out, cs)
+	for i := range out {
+		c := &out[i]
+		dist := math.Abs(float64(c.Pos.Z) - cam.Z)
+		c.Color = blendColor(c.Color, pal.Backdrop, fogAmount(dist))
+	}
+	return out
+}
+
+// fogAmount returns how much to blend toward the backdrop at z distance
+// dist, from 0 inside fogNear to 1 at or beyond fogFar.
+func fogAmount(dist float64) float64 {
+	if dist <= fogNear {
+		return 0
+	}
+	if dist >= fogFar {
+		return 1
+	}
+	return (dist - fogNear) / (fogFar - fogNear)
 }
 
 type worldBuilder struct {

@@ -106,3 +106,24 @@ func rlColor(c Color) rl.Color {
 }
 
 func f32(v float64) float32 { return float32(v) }
+
+// blendColor returns c blended toward to by amount, clamped to [0, 1]. An
+// amount of 0 returns c unchanged; an amount of 1 returns to. Every channel,
+// including alpha, blends linearly.
+func blendColor(c, to Color, amount float64) Color {
+	if amount <= 0 {
+		return c
+	}
+	if amount >= 1 {
+		return to
+	}
+	lerp := func(a, b uint8) uint8 {
+		return uint8(float64(a) + (float64(b)-float64(a))*amount)
+	}
+	return Color{
+		R: lerp(c.R, to.R),
+		G: lerp(c.G, to.G),
+		B: lerp(c.B, to.B),
+		A: lerp(c.A, to.A),
+	}
+}

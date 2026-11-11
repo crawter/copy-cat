@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
@@ -26,12 +27,20 @@ type ScreenLine struct {
 type UI struct {
 	fnt   *font.Font
 	scale int
+
+	// scene and sceneAt track when the current scene started, so Draw can
+	// overlay a short fade on every scene change. started drives the hero's
+	// run animation and never resets while the UI lives.
+	scene   campaign.Scene
+	sceneAt time.Time
+	started time.Time
 }
 
 // NewUI returns a UI that draws its text with fnt. The font is read-only and
 // safe to share.
 func NewUI(fnt *font.Font) *UI {
-	return &UI{fnt: fnt, scale: uiScale}
+	now := time.Now()
+	return &UI{fnt: fnt, scale: uiScale, sceneAt: now, started: now}
 }
 
 // The screen layout is described in the font's unscaled pixel grid; Draw
@@ -46,6 +55,17 @@ const (
 	// storyWrapChars is the maximum rune count a story or ending line holds
 	// before it wraps to the next line.
 	storyWrapChars = 60
+
+	// sceneFadeDuration is how many seconds a scene-change fade takes to
+	// clear.
+	sceneFadeDuration = 0.35
+
+	// Copycat trail distance tuning: a base gap grows with the run's speed
+	// and shrinks as Chase closes in, never below copycatMinGap.
+	copycatBaseGap  = 1.2
+	copycatSpeedGap = 0.25
+	copycatChaseGap = 2.5
+	copycatMinGap   = 1.6
 )
 
 // UI colors, drawn behind and over the screen text.
@@ -63,9 +83,11 @@ const cameraPerspective = 0
 
 // Draw renders the scene for the flow's current state in a window of w by h
 // pixels. It clears the window, draws the 3D corridor or boss arena while
-// playing or paused, then draws the matching screen text.
+// playing or paused, then draws the matching screen text and overlays a fade
+// when the scene just changed.
 func (u *UI) Draw(f *campaign.Flow, w, h int) {
 	rl.ClearBackground(rlColor(uiBackground))
+	u.trackScene(f)
 	switch f.Scene() {
 	case campaign.ScenePlay:
 		u.drawScene(f)
@@ -78,6 +100,47 @@ func (u *UI) Draw(f *campaign.Flow, w, h int) {
 	default:
 		u.drawLines(MenuLines(f), w, h, true)
 	}
+	u.drawFade(w, h)
+}
+
+// trackScene records when the flow changes scene so the fade can restart.
+func (u *UI) trackScene(f *campaign.Flow) {
+	if f.Scene() != u.scene {
+		u.scene = f.Scene()
+		u.sceneAt = time.Now()
+	}
+}
+
+// drawFade overlays the scene-change fade on the whole window. It draws
+// nothing once the fade has cleared.
+func (u *UI) drawFade(w, h int) {
+	alpha := fadeAlpha(time.Since(u.sceneAt).Seconds(), sceneFadeDuration)
+	if alpha <= 0 {
+		return
+	}
+	rl.DrawRectangle(
+		0,
+		0,
+		int32(w),
+		int32(h),
+		rlColor(Color{R: uiBackground.R, G: uiBackground.G, B: uiBackground.B, A: uint8(alpha * 255)}),
+	)
+}
+
+// fadeAlpha maps the elapsed time since a scene change to the overlay alpha
+// in [0, 1]. It starts opaque and fades linearly to transparent after
+// duration seconds. A non-positive duration reports a cleared fade.
+func fadeAlpha(elapsed, duration float64) float64 {
+	if duration <= 0 {
+		return 0
+	}
+	if elapsed <= 0 {
+		return 1
+	}
+	if elapsed >= duration {
+		return 0
+	}
+	return 1 - elapsed/duration
 }
 
 // MenuLines returns the plain text of the current menu screen: the language
@@ -327,16 +390,22 @@ func storyWrap(text string, x, y, gap int) []ScreenLine {
 
 // drawScene draws the 3D scene behind play and pause: the generated corridor
 // with the hero and Copycat, or the boss arena with the hero and Copycat's
-// boss form.
+// boss form. The hero is animated by the seconds elapsed since the UI was
+// created.
 func (u *UI) drawScene(f *campaign.Flow) {
 	cam := u.cameraFor(f)
 	rl.BeginMode3D(cam)
 	defer rl.EndMode3D()
 
+	t := time.Since(u.started).Seconds()
+
 	if b := f.Boss(); b != nil {
 		DrawCmds(BuildBossArena(Cam{Lane: float64(b.HeroLane()), Z: 0, Height: 0}))
+		if !b.Vulnerable() {
+			DrawCmds(BuildArenaTelegraph(b.AttackLane(), b.AttackKind()))
+		}
 		heroPos := Vec3{X: f32(laneX(float64(b.HeroLane()))), Y: 0, Z: 0}
-		u.drawModelAt(BuildHero(PoseRun, false), heroPos)
+		u.drawModelAt(BuildHeroAt(BossPose(b.Jumping(), b.Sliding()), false, t), heroPos)
 		bossPos := Vec3{X: f32(laneX(float64(b.AttackLane()))), Y: 0, Z: 8}
 		u.drawModelAt(BuildBoss(b.Phase(), b.Vulnerable()), bossPos)
 		return
@@ -348,10 +417,10 @@ func (u *UI) drawScene(f *campaign.Flow) {
 	}
 	theme := runTheme(f)
 	cam3 := Cam{Lane: r.Runner.Lane(), Z: r.Runner.Z(), Height: r.Runner.Height()}
-	DrawCmds(BuildWorld(r.Level, theme, cam3))
+	DrawCmds(ApplyFog(BuildWorld(r.Level, theme, cam3), cam3, Palette(theme)))
 	pos := Vec3{X: f32(laneX(r.Runner.Lane())), Y: f32(r.Runner.Height()), Z: f32(r.Runner.Z())}
-	u.drawModelAt(BuildHero(heroPoseFor(r), r.Bald), pos)
-	chase := 2 + r.Chase*3
+	u.drawModelAt(BuildHeroAt(heroPoseFor(r), r.Bald, t), pos)
+	chase := CopycatDistance(r.Runner.Speed(), r.Chase)
 	u.drawModelAt(BuildCopycat(chase), Vec3{X: pos.X, Y: 0, Z: pos.Z})
 }
 
@@ -401,11 +470,46 @@ func runTheme(f *campaign.Flow) campaign.Theme {
 	return campaign.ThemeMangroves
 }
 
-func heroPoseFor(r *gameplay.Run) HeroPose {
-	if r.Runner.Height() > 0.05 {
+// RunnerPose maps the runner's movement state to the hero pose the model
+// draws. It is pure so tests can cover every move without constructing a run.
+func RunnerPose(slamming, sliding, airborne bool) HeroPose {
+	switch {
+	case slamming:
+		return PoseSlam
+	case sliding:
+		return PoseSlide
+	case airborne:
+		return PoseJump
+	default:
+		return PoseRun
+	}
+}
+
+// BossPose maps the boss fight's hero moves to the hero pose the model draws:
+// a jump, a grounded slide, or the run stance.
+func BossPose(jumping, sliding bool) HeroPose {
+	if jumping {
 		return PoseJump
 	}
+	if sliding {
+		return PoseSlide
+	}
 	return PoseRun
+}
+
+func heroPoseFor(r *gameplay.Run) HeroPose {
+	return RunnerPose(r.Runner.Slamming(), r.Runner.Sliding(), r.Runner.Airborne())
+}
+
+// CopycatDistance returns how far behind the hero Copycat trails: a base gap
+// grows with the run's speed and shrinks as Chase closes in, but never drops
+// below the minimum that keeps Copycat clear of the hero.
+func CopycatDistance(speed, chase float64) float64 {
+	gap := copycatBaseGap + copycatSpeedGap*speed - copycatChaseGap*chase
+	if gap < copycatMinGap {
+		gap = copycatMinGap
+	}
+	return gap
 }
 
 // drawLines lays out and draws the screen lines. center centers the block in
