@@ -87,6 +87,7 @@ func run() error {
 		currentTrack = audio.Track(-1) // forces the first track selection below
 		lastProgress = file.Progress
 		lastSettings = file.Settings
+		prevSettings = file.Settings
 	)
 	buf := make([]float32, streamBufferFrames*streamChannels)
 
@@ -106,7 +107,7 @@ func run() error {
 
 		prevState = st
 
-		applySettings(mixer, flow, &prevFullscreen)
+		applySettings(mixer, flow, &prevSettings, &prevFullscreen)
 		playTrack(mixer, &currentTrack, trackForScene(flow))
 		saveIfChanged(path, flow, &lastProgress, &lastSettings)
 		feedStream(stream, mixer, buf)
@@ -324,8 +325,9 @@ func playTrack(mixer *audio.Mixer, current *audio.Track, want audio.Track) {
 	mixer.PlayMusic(want)
 }
 
-// applySettings pushes the flow's settings into the mixer and the window.
-func applySettings(mixer *audio.Mixer, f *campaign.Flow, prevFullscreen *bool) {
+// applySettings pushes the flow's settings into the mixer and the window, and
+// plays a preview one-shot once when a volume changes.
+func applySettings(mixer *audio.Mixer, f *campaign.Flow, prevSettings *campaign.Settings, prevFullscreen *bool) {
 	s := f.Settings()
 	mixer.SetMusicVolume(float32(s.MusicVolume))
 	mixer.SetSoundVolume(float32(s.SoundVolume))
@@ -333,6 +335,19 @@ func applySettings(mixer *audio.Mixer, f *campaign.Flow, prevFullscreen *bool) {
 		rl.ToggleFullscreen()
 		*prevFullscreen = s.Fullscreen
 	}
+	if sound, ok := volumePreviewSound(*prevSettings, s); ok {
+		mixer.Play(sound)
+	}
+	*prevSettings = s
+}
+
+// volumePreviewSound returns the one-shot to play when the music or sound
+// volume changes between prev and cur, and whether a preview is needed.
+func volumePreviewSound(prev, cur campaign.Settings) (audio.Sound, bool) {
+	if prev.MusicVolume == cur.MusicVolume && prev.SoundVolume == cur.SoundVolume {
+		return 0, false
+	}
+	return audio.SoundMenuSelect, true
 }
 
 // saveIfChanged writes the save whenever progress or settings changed.
