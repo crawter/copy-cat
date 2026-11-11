@@ -22,8 +22,7 @@ const (
 	TrackNeon
 	// TrackBoss is the tense, faster looping theme for the boss fight.
 	TrackBoss
-	// TrackEnding is the warm, triumphant theme played on the ending card and
-	// the credits roll.
+	// TrackEnding is the gentle theme played on the ending and credits scenes.
 	TrackEnding
 )
 
@@ -51,25 +50,27 @@ const (
 	SoundSnip
 	// SoundCheckpoint is the chime played when a checkpoint is reached.
 	SoundCheckpoint
-	// SoundStomp is the low thump played when the hero stomps an enemy.
+	// SoundStomp is the low crush played when the hero stomps an enemy.
 	SoundStomp
-	// SoundFall is the descending whistle played when the hero falls.
+	// SoundFall is the descending whoosh and thud played when the hero falls
+	// into a pit.
 	SoundFall
-	// SoundFanfare is the bright jingle played when a level is completed.
+	// SoundFanfare is the victory fanfare played when a run is finished.
 	SoundFanfare
-	// SoundGameOver is the sad jingle played when a run ends in a game over.
+	// SoundGameOver is the descending phrase played when the hero dies.
 	SoundGameOver
-	// SoundMenuMove is the click played when the menu cursor moves.
+	// SoundMenuMove is the short blip played when a menu selection moves.
 	SoundMenuMove
-	// SoundMenuSelect is the confirm blip played when a menu item is chosen.
+	// SoundMenuSelect is the chime played when a menu selection is confirmed.
 	SoundMenuSelect
-	// SoundExtraLife is the rising chime played when an extra life is earned.
+	// SoundExtraLife is the rising arpeggio played when an extra life is won.
 	SoundExtraLife
-	// SoundBossHit is the harsh metallic hit played when the boss takes damage.
+	// SoundBossHit is the impact played when the boss hits the hero.
 	SoundBossHit
-	// SoundHonk is Downald D's nasal honk.
+	// SoundHonk is the honk played when the hero falls into a pit.
 	SoundHonk
-	// SoundMeow is Copycat's meow.
+	// SoundMeow is the meow played when Copycat snips hair or the boss phase
+	// rises.
 	SoundMeow
 )
 

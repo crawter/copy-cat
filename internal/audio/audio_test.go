@@ -16,6 +16,21 @@ func hasSignal(buf []float32) bool {
 	return false
 }
 
+// allTracks lists every looping track, ending theme included.
+func allTracks() []Track {
+	return []Track{TrackMenu, TrackMangroves, TrackHarbor, TrackNeon, TrackBoss, TrackEnding}
+}
+
+// allSounds lists every one-shot effect, the ten new ones included.
+func allSounds() []Sound {
+	return []Sound{
+		SoundJump, SoundSlide, SoundSlam, SoundComb, SoundHairspray, SoundHit,
+		SoundSnip, SoundCheckpoint, SoundStomp, SoundFall, SoundFanfare,
+		SoundGameOver, SoundMenuMove, SoundMenuSelect, SoundExtraLife,
+		SoundBossHit, SoundHonk, SoundMeow,
+	}
+}
+
 func TestNewClampsSampleRate(t *testing.T) {
 	for _, rate := range []int{0, -100, 1, 7999, 8000, 44100, 192000, 200000} {
 		m := New(rate)
@@ -26,8 +41,7 @@ func TestNewClampsSampleRate(t *testing.T) {
 }
 
 func TestEveryTrackRendersNonSilent(t *testing.T) {
-	tracks := []Track{TrackMenu, TrackMangroves, TrackHarbor, TrackNeon, TrackBoss, TrackEnding}
-	for _, tr := range tracks {
+	for _, tr := range allTracks() {
 		m := New(testSampleRate)
 		m.PlayMusic(tr)
 		buf := make([]float32, m.loopFrames[tr]*2)
@@ -39,11 +53,7 @@ func TestEveryTrackRendersNonSilent(t *testing.T) {
 }
 
 func TestEverySoundRendersNonSilent(t *testing.T) {
-	sounds := []Sound{
-		SoundJump, SoundSlide, SoundSlam, SoundComb, SoundHairspray, SoundHit, SoundSnip, SoundCheckpoint,
-		SoundStomp, SoundFall, SoundFanfare, SoundGameOver, SoundMenuMove, SoundMenuSelect, SoundExtraLife, SoundBossHit, SoundHonk, SoundMeow,
-	}
-	for _, snd := range sounds {
+	for _, snd := range allSounds() {
 		m := New(testSampleRate)
 		m.Play(snd)
 		buf := make([]float32, soundFrames(snd, testSampleRate)*2)
@@ -55,9 +65,12 @@ func TestEverySoundRendersNonSilent(t *testing.T) {
 }
 
 func TestEverySoundHasPositiveDuration(t *testing.T) {
-	for s := SoundJump; s <= SoundMeow; s++ {
-		if soundDur[s] <= 0 {
-			t.Errorf("sound %v has non-positive duration %v", s, soundDur[s])
+	for _, snd := range allSounds() {
+		if soundDur[snd] <= 0 {
+			t.Errorf("sound %v has non-positive duration %v", snd, soundDur[snd])
+		}
+		if soundFrames(snd, testSampleRate) <= 0 {
+			t.Errorf("sound %v has non-positive frame count", snd)
 		}
 	}
 }
@@ -136,31 +149,29 @@ func TestSoundVolumeSilencesEffects(t *testing.T) {
 }
 
 func TestMixingClamps(t *testing.T) {
-	m := New(testSampleRate)
-	m.PlayMusic(TrackBoss)
-	for _, snd := range []Sound{
-		SoundJump, SoundSlide, SoundSlam, SoundComb, SoundHairspray, SoundHit, SoundSnip, SoundCheckpoint,
-		SoundStomp, SoundFall, SoundFanfare, SoundGameOver, SoundMenuMove, SoundMenuSelect, SoundExtraLife, SoundBossHit, SoundHonk, SoundMeow,
-	} {
-		m.Play(snd)
-	}
-	buf := make([]float32, testSampleRate*2)
-	m.Fill(buf)
-	for i, v := range buf {
-		if v < -1 || v > 1 || math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
-			t.Fatalf("sample %d out of range: %v", i, v)
+	for _, tr := range allTracks() {
+		m := New(testSampleRate)
+		m.PlayMusic(tr)
+		for _, snd := range allSounds() {
+			m.Play(snd)
+		}
+		buf := make([]float32, testSampleRate*2)
+		m.Fill(buf)
+		for i, v := range buf {
+			if v < -1 || v > 1 || math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+				t.Fatalf("track %v sample %d out of range: %v", tr, i, v)
+			}
 		}
 	}
 }
 
 func TestFreshMixersRenderIdentically(t *testing.T) {
-	tracks := []Track{TrackMenu, TrackMangroves, TrackHarbor, TrackNeon, TrackBoss, TrackEnding}
-	for _, tr := range tracks {
+	for _, tr := range allTracks() {
 		a := New(testSampleRate)
 		b := New(testSampleRate)
 		a.PlayMusic(tr)
 		b.PlayMusic(tr)
-		for _, snd := range []Sound{SoundJump, SoundSnip} {
+		for _, snd := range allSounds() {
 			a.Play(snd)
 			b.Play(snd)
 		}
@@ -177,8 +188,7 @@ func TestFreshMixersRenderIdentically(t *testing.T) {
 }
 
 func TestTracksLoopWithoutSeamClick(t *testing.T) {
-	tracks := []Track{TrackMenu, TrackMangroves, TrackHarbor, TrackNeon, TrackBoss, TrackEnding}
-	for _, tr := range tracks {
+	for _, tr := range allTracks() {
 		m := New(testSampleRate)
 		m.PlayMusic(tr)
 		loop := m.loops[tr]

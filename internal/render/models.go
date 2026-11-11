@@ -1,6 +1,10 @@
 package render
 
-import "copycat/internal/campaign"
+import (
+	"math"
+
+	"copycat/internal/campaign"
+)
 
 // HeroPose is one of Downald D's canonical body poses. The caller maps the
 // runner's state onto it; BuildHero turns the pose into a command list.
@@ -18,6 +22,36 @@ const (
 	PoseSlide
 	// PoseSlam is the stretched slam.
 	PoseSlam
+	// PoseLanding is the crouched landing after a jump or slam.
+	PoseLanding
+	// PoseStomp is the wide-legged airborne stomp.
+	PoseStomp
+	// PoseSprint is the fast run with a longer, faster stride.
+	PoseSprint
+)
+
+// CopycatPose is the stance BuildCopycatAt draws.
+type CopycatPose int
+
+// The stances BuildCopycatAt understands.
+const (
+	// CopycatPoseIdle is the ordinary chase stance.
+	CopycatPoseIdle CopycatPose = iota
+	// CopycatPoseWindup is the attack wind-up with snapping scissors.
+	CopycatPoseWindup
+)
+
+// BossStance is the stance BuildBossAt draws.
+type BossStance int
+
+// The stances BuildBossAt understands.
+const (
+	// BossStanceIdle is the ordinary phase stance.
+	BossStanceIdle BossStance = iota
+	// BossStanceWindup is the low-swipe attack wind-up.
+	BossStanceWindup
+	// BossStanceJump is the high-swipe jump/rear.
+	BossStanceJump
 )
 
 // Downald D's part colors, kept fixed so the hero always reads the same.
@@ -66,12 +100,20 @@ const (
 	enemyVacuum
 )
 
-// BuildHero returns Downald D's model as a draw list. The hero stands at the
-// origin with his feet at y = 0 and faces +z, so the caller can translate the
-// list onto his lane and height. pose picks the pose; bald removes only the
-// hairstyle.
+// BuildHero returns Downald D's rounded model at the first animation frame.
+// The hero stands at the origin with his feet at y = 0 and faces +z, so the
+// caller can translate the list onto his lane and height. pose picks the
+// pose; bald removes only the hairstyle.
 func BuildHero(pose HeroPose, bald bool) []Cmd {
+	return BuildHeroAt(pose, bald, 0)
+}
+
+// BuildHeroAt returns Downald D's rounded, animated model. t is the
+// animation phase in seconds; whole seconds repeat, so 0 and 1 draw the same
+// frame. pose picks the pose and bald removes only the hairstyle.
+func BuildHeroAt(pose HeroPose, bald bool, t float64) []Cmd {
 	s := heroSpecFor(pose)
+	animateHero(&s, pose, t)
 	cs := heroTorsoCmds(s)
 	cs = append(cs, heroLimbCmds(s)...)
 	cs = append(cs, heroTailCmds(s)...)
@@ -89,8 +131,12 @@ type heroSpec struct {
 	headY     float32
 	legAhead  float32
 	legUp     float32
+	footOut   float32
+	footAhead float32
 	armSwing  float32
 	armOut    float32
+	handOut   float32
+	handSwing float32
 	tailY     float32
 	tailZ     float32
 	hairSweep float32
@@ -102,30 +148,53 @@ func heroSpecFor(pose HeroPose) heroSpec {
 	case PoseRun:
 		return heroSpec{
 			bodyY: 0.95, bodyH: 0.8, headY: 1.5,
-			legAhead: 0.22, armSwing: 0.18, armOut: 0.04,
+			legAhead: 0.22, footAhead: 0.06, armSwing: 0.18, armOut: 0.04, handSwing: 0.06,
 			tailY: 0.72, tailZ: -0.68,
 			hairSweep: 0.12, hairDip: 0.05,
+		}
+	case PoseSprint:
+		return heroSpec{
+			bodyY: 0.9, bodyH: 0.78, headY: 1.46,
+			legAhead: 0.3, footAhead: 0.1, armSwing: 0.26, armOut: 0.06, handSwing: 0.1,
+			tailY: 0.75, tailZ: -0.72,
+			hairSweep: 0.18, hairDip: 0.08,
 		}
 	case PoseJump:
 		return heroSpec{
 			bodyY: 0.98, bodyH: 0.72, headY: 1.5,
-			legAhead: 0.06, legUp: 0.2, armSwing: 0.1, armOut: 0.12,
+			legAhead: 0.06, legUp: 0.2, footAhead: 0.08, armSwing: 0.1, armOut: 0.12, handSwing: 0.08,
 			tailY: 0.98, tailZ: -0.4,
 			hairSweep: 0.18, hairDip: 0.08,
 		}
 	case PoseSlide:
 		return heroSpec{
 			bodyY: 0.6, bodyH: 0.5, headY: 1.05,
-			legAhead: 0.3, legUp: 0.12, armSwing: 0.2, armOut: 0.05,
+			legAhead: 0.3, legUp: 0.12, footAhead: 0.14, armSwing: 0.2, armOut: 0.05, handSwing: 0.1,
 			tailY: 0.4, tailZ: -0.9,
 			hairSweep: 0.22, hairDip: 0.12,
 		}
 	case PoseSlam:
 		return heroSpec{
 			bodyY: 1.1, bodyH: 0.95, headY: 1.62,
-			legAhead: 0.16, armSwing: 0.3, armOut: 0.18,
+			legAhead: 0.16, armSwing: 0.3, armOut: 0.18, handSwing: 0.14,
 			tailY: 1.05, tailZ: -0.5,
 			hairSweep: 0.26, hairDip: 0.16,
+		}
+	case PoseLanding:
+		return heroSpec{
+			bodyY: 0.85, bodyH: 0.75, headY: 1.4,
+			legAhead: 0.1, legUp: 0.08, footOut: 0.04, footAhead: 0.04,
+			armSwing: 0.12, armOut: 0.06, handSwing: 0.06,
+			tailY: 0.7, tailZ: -0.6,
+			hairSweep: 0.08, hairDip: 0.06,
+		}
+	case PoseStomp:
+		return heroSpec{
+			bodyY: 1.15, bodyH: 1.0, headY: 1.65,
+			legAhead: 0.24, footOut: 0.06, footAhead: 0.1,
+			armSwing: 0.34, armOut: 0.2, handOut: 0.05, handSwing: 0.16,
+			tailY: 1.1, tailZ: -0.45,
+			hairSweep: 0.3, hairDip: 0.18,
 		}
 	default: // PoseIdle and any unknown pose.
 		return heroSpec{
@@ -135,11 +204,42 @@ func heroSpecFor(pose HeroPose) heroSpec {
 	}
 }
 
+// animateHero oscillates the idle, run and sprint poses with the phase t so
+// the hero never freezes. The idle pose breathes; the run and sprint poses
+// swing their limbs and tail, with a longer, faster stride when sprinting.
+// Other poses keep their fixed silhouettes.
+func animateHero(s *heroSpec, pose HeroPose, t float64) {
+	phase := t - math.Floor(t)
+	if phase < 0 {
+		phase++
+	}
+	switch pose {
+	case PoseIdle:
+		breath := float32(math.Sin(2 * math.Pi * phase))
+		s.bodyY += 0.02 * breath
+		s.headY += 0.03 * breath
+		s.tailZ += 0.05 * breath
+	case PoseRun, PoseSprint:
+		swing := float32(math.Sin(2 * math.Pi * phase))
+		amp := float32(1)
+		if pose == PoseSprint {
+			amp = 1.4
+		}
+		s.legAhead += 0.14 * amp * swing
+		s.armSwing += 0.12 * amp * swing
+		s.tailZ += 0.06 * amp * swing
+		s.hairSweep += 0.04 * amp * swing
+	}
+}
+
 func heroTorsoCmds(s heroSpec) []Cmd {
+	halfH := s.bodyH / 2
 	return []Cmd{
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.bodyY, Z: 0}, Size: Size{X: 0.7, Y: float64(s.bodyH), Z: 0.45}, Color: heroBody},
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.bodyY - 0.05, Z: 0.23}, Size: Size{X: 0.5, Y: float64(s.bodyH - 0.25), Z: 0.12}, Color: heroBelly},
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.headY, Z: 0.02}, Size: Size{X: 0.44, Y: 0.34, Z: 0.4}, Color: heroBody},
+		{Shape: ShapeCylinder, Pos: Vec3{X: 0, Y: s.bodyY, Z: 0}, Size: Size{X: 0.34, Y: float64(s.bodyH)}, Color: heroBody},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.bodyY + halfH, Z: 0}, Size: Size{X: 0.3}, Color: heroBody},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.bodyY - halfH + 0.03, Z: 0}, Size: Size{X: 0.3}, Color: heroBody},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.bodyY - 0.02, Z: 0.26}, Size: Size{X: 0.22}, Color: heroBelly},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.headY, Z: 0.02}, Size: Size{X: 0.26}, Color: heroBody},
 	}
 }
 
@@ -151,26 +251,44 @@ func heroLimbCmds(s heroSpec) []Cmd {
 	}
 	legY := 0.28 + s.legUp
 	for i, dz := range []float32{-s.legAhead, s.legAhead} {
-		x := float32(-0.18)
+		x := float32(-0.16)
+		dx := float32(-1)
 		if i == 1 {
-			x = 0.18
+			x = 0.16
+			dx = 1
 		}
 		cs = append(cs, Cmd{
-			Shape: ShapeBox,
+			Shape: ShapeCylinder,
 			Pos:   Vec3{X: x, Y: legY, Z: dz},
-			Size:  Size{X: 0.16, Y: float64(legH), Z: 0.16},
+			Size:  Size{X: 0.07, Y: float64(legH)},
+			Color: heroLimb,
+		})
+		footY := legY - legH/2 + 0.03
+		cs = append(cs, Cmd{
+			Shape: ShapeSphere,
+			Pos:   Vec3{X: x + dx*s.footOut, Y: footY, Z: dz + s.footAhead},
+			Size:  Size{X: 0.06},
 			Color: heroLimb,
 		})
 	}
 	for i, dz := range []float32{-s.armSwing, s.armSwing} {
-		x := 0.38 + s.armOut
+		x := 0.34 + s.armOut
+		dx := float32(1)
 		if i == 0 {
 			x = -x
+			dx = -1
 		}
 		cs = append(cs, Cmd{
-			Shape: ShapeBox,
+			Shape: ShapeCylinder,
 			Pos:   Vec3{X: x, Y: 1.0, Z: dz},
-			Size:  Size{X: 0.13, Y: 0.45, Z: 0.13},
+			Size:  Size{X: 0.06, Y: 0.45},
+			Color: heroLimb,
+		})
+		handY := float32(1.0 - 0.225 + 0.02)
+		cs = append(cs, Cmd{
+			Shape: ShapeSphere,
+			Pos:   Vec3{X: x + dx*s.handOut, Y: handY, Z: dz + s.handSwing},
+			Size:  Size{X: 0.05},
 			Color: heroLimb,
 		})
 	}
@@ -179,21 +297,26 @@ func heroLimbCmds(s heroSpec) []Cmd {
 
 func heroTailCmds(s heroSpec) []Cmd {
 	return []Cmd{
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.tailY, Z: s.tailZ}, Size: Size{X: 0.1, Y: 0.1, Z: 0.55}, Color: heroTail},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.tailY, Z: s.tailZ}, Size: Size{X: 0.1}, Color: heroTail},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.tailY + 0.02, Z: s.tailZ - 0.18}, Size: Size{X: 0.07}, Color: heroTail},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.tailY + 0.04, Z: s.tailZ - 0.3}, Size: Size{X: 0.05}, Color: heroTail},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.tailY + 0.03, Z: s.tailZ - 0.42}, Size: Size{X: 0.04}, Color: heroTail},
 	}
 }
 
 func heroNoseCmds(s heroSpec) []Cmd {
 	return []Cmd{
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.headY - 0.28, Z: 0.3}, Size: Size{X: 0.22, Y: 0.55, Z: 0.4}, Color: heroNose},
+		{Shape: ShapeCone, Pos: Vec3{X: 0, Y: s.headY - 0.28, Z: 0.32}, Size: Size{X: 0.13, Y: 0.55}, Color: heroNose},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.headY - 0.55, Z: 0.32}, Size: Size{X: 0.06}, Color: heroNose},
 	}
 }
 
 func heroHairCmds(s heroSpec) []Cmd {
 	return []Cmd{
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.headY + 0.18, Z: 0}, Size: Size{X: 0.48, Y: 0.12, Z: 0.42}, Color: heroHair},
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.headY + 0.13, Z: -0.16 - s.hairSweep}, Size: Size{X: 0.46, Y: 0.1, Z: 0.34}, Color: heroHair},
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: s.headY + 0.05 - s.hairDip, Z: -0.3 - s.hairSweep}, Size: Size{X: 0.4, Y: 0.09, Z: 0.28}, Color: heroHair},
+		{Shape: ShapeSphere, Pos: Vec3{X: 0, Y: s.headY + 0.22, Z: 0.02}, Size: Size{X: 0.14}, Color: heroHair},
+		{Shape: ShapeCone, Pos: Vec3{X: 0, Y: s.headY + 0.2, Z: -0.08 - s.hairSweep}, Size: Size{X: 0.12, Y: 0.3}, Color: heroHair},
+		{Shape: ShapeCone, Pos: Vec3{X: 0, Y: s.headY + 0.16 - s.hairDip, Z: -0.22 - s.hairSweep}, Size: Size{X: 0.1, Y: 0.26}, Color: heroHair},
+		{Shape: ShapeCone, Pos: Vec3{X: 0.06 + s.hairSweep, Y: s.headY + 0.12, Z: -0.3 - s.hairSweep}, Size: Size{X: 0.08, Y: 0.2}, Color: heroHair},
 	}
 }
 
@@ -298,21 +421,60 @@ func vacuumCmds(pos Vec3) []Cmd {
 	}
 }
 
+// windAmt maps the animation clock to a smooth [0, 1] wind-up phase that
+// repeats once per second: 0 at the start, 1 at the peak and 0 again at the
+// end of the cycle.
+func windAmt(t float64) float32 {
+	phase := t - math.Floor(t)
+	if phase < 0 {
+		phase++
+	}
+	return float32(math.Sin(math.Pi * phase))
+}
+
+// hopAmt maps the animation clock to a signed [-1, 1] vertical hop that
+// repeats once per second.
+func hopAmt(t float64) float32 {
+	phase := t - math.Floor(t)
+	if phase < 0 {
+		phase++
+	}
+	return float32(math.Sin(2 * math.Pi * phase))
+}
+
 // BuildCopycat returns the Copycat chaser model. It is the same barber cat
 // drawn behind the hero: every command sits at z = -chase, so a larger chase
 // distance places him farther behind the hero at the origin.
 func BuildCopycat(chase float64) []Cmd {
+	return BuildCopycatAt(chase, CopycatPoseIdle, 0)
+}
+
+// BuildCopycatAt returns the Copycat chaser model at animation clock t in
+// seconds. In the wind-up stance the scissors lunge forward and snap with a
+// smooth per-second phase.
+func BuildCopycatAt(chase float64, pose CopycatPose, t float64) []Cmd {
 	z := float32(-chase)
+	bodyY := float32(0.7)
+	headY := float32(1.15)
+	armY := float32(1.0)
+	scissorZ := float32(0.15)
+	if pose == CopycatPoseWindup {
+		wind := windAmt(t)
+		bodyY = 0.71 + 0.02*wind
+		headY = 1.16 + 0.03*wind
+		armY = 1.08 + 0.08*wind
+		scissorZ = 0.2 + 0.12*wind
+	}
 	return []Cmd{
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: 0.7, Z: z}, Size: Size{X: 0.6, Y: 0.7, Z: 0.4}, Color: catFur},
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: 0.65, Z: z + 0.21}, Size: Size{X: 0.5, Y: 0.6, Z: 0.1}, Color: catApron},
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: 1.15, Z: z}, Size: Size{X: 0.4, Y: 0.32, Z: 0.36}, Color: catFur},
-		{Shape: ShapeCone, Pos: Vec3{X: -0.13, Y: 1.5, Z: z}, Size: Size{X: 0.09, Y: 0.22}, Color: catFur},
-		{Shape: ShapeCone, Pos: Vec3{X: 0.13, Y: 1.5, Z: z}, Size: Size{X: 0.09, Y: 0.22}, Color: catFur},
-		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: 0.75, Z: z - 0.35}, Size: Size{X: 0.08, Y: 0.08, Z: 0.5}, Color: catFur},
-		{Shape: ShapeBox, Pos: Vec3{X: 0.28, Y: 1.0, Z: z + 0.15}, Size: Size{X: 0.06, Y: 0.02, Z: 0.34}, Color: catScissor},
-		{Shape: ShapeBox, Pos: Vec3{X: 0.22, Y: 1.0, Z: z + 0.15}, Size: Size{X: 0.06, Y: 0.02, Z: 0.34}, Color: catScissor},
-		{Shape: ShapeBox, Pos: Vec3{X: 0.25, Y: 1.0, Z: z + 0.32}, Size: Size{X: 0.08, Y: 0.05, Z: 0.06}, Color: catScissor},
+		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: bodyY, Z: z}, Size: Size{X: 0.6, Y: 0.7, Z: 0.4}, Color: catFur},
+		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: bodyY - 0.05, Z: z + 0.21}, Size: Size{X: 0.5, Y: 0.6, Z: 0.1}, Color: catApron},
+		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: headY, Z: z}, Size: Size{X: 0.4, Y: 0.32, Z: 0.36}, Color: catFur},
+		{Shape: ShapeCone, Pos: Vec3{X: -0.13, Y: headY + 0.35, Z: z}, Size: Size{X: 0.09, Y: 0.22}, Color: catFur},
+		{Shape: ShapeCone, Pos: Vec3{X: 0.13, Y: headY + 0.35, Z: z}, Size: Size{X: 0.09, Y: 0.22}, Color: catFur},
+		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: bodyY + 0.05, Z: z - 0.35}, Size: Size{X: 0.08, Y: 0.08, Z: 0.5}, Color: catFur},
+		{Shape: ShapeBox, Pos: Vec3{X: 0.28, Y: armY, Z: z + scissorZ}, Size: Size{X: 0.06, Y: 0.02, Z: 0.34}, Color: catScissor},
+		{Shape: ShapeBox, Pos: Vec3{X: 0.22, Y: armY, Z: z + scissorZ}, Size: Size{X: 0.06, Y: 0.02, Z: 0.34}, Color: catScissor},
+		{Shape: ShapeBox, Pos: Vec3{X: 0.25, Y: armY, Z: z + scissorZ + 0.17}, Size: Size{X: 0.08, Y: 0.05, Z: 0.06}, Color: catScissor},
 	}
 }
 
@@ -320,6 +482,13 @@ func BuildCopycat(chase float64) []Cmd {
 // and angrier, with a stance that changes across phases 1 through 3 and a
 // crouch when vulnerable is true.
 func BuildBoss(phase int, vulnerable bool) []Cmd {
+	return BuildBossAt(phase, vulnerable, BossStanceIdle, 0)
+}
+
+// BuildBossAt returns the Copycat boss model at animation clock t in seconds.
+// stance adds an attack wind-up or a high-swipe jump on top of the phase and
+// vulnerable stance.
+func BuildBossAt(phase int, vulnerable bool, stance BossStance, t float64) []Cmd {
 	bodyY := float32(1.25)
 	headY := float32(1.9)
 	armY := float32(1.5)
@@ -336,6 +505,18 @@ func BuildBoss(phase int, vulnerable bool) []Cmd {
 		bodyY -= 0.45
 		headY -= 0.45
 		armY -= 0.45
+	}
+	switch stance {
+	case BossStanceWindup:
+		wind := windAmt(t)
+		armY += 0.05 + 0.05*wind
+		armZ += 0.15 + 0.15*wind
+	case BossStanceJump:
+		hop := hopAmt(t)
+		lift := 0.25 + 0.08*hop
+		bodyY += lift
+		headY += lift
+		armY += lift + 0.1
 	}
 	return []Cmd{
 		{Shape: ShapeBox, Pos: Vec3{X: 0, Y: bodyY, Z: 0}, Size: Size{X: 0.95, Y: 1.1, Z: 0.65}, Color: bossFur},

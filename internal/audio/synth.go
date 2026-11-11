@@ -336,44 +336,42 @@ var trackDefs = [trackCount]trackDef{
 		},
 	},
 	TrackEnding: trackDef{
-		bpm:   90,
+		bpm:   72,
 		beats: 16,
 		lead: []note{
-			sq(0, 0.5, 16), tri(0, 2, 4), tri(2, 1, 7), tri(3, 1, 12),
-			sq(4, 0.5, 17), tri(4, 2, 9), tri(6, 1, 5), tri(7, 1, 7),
-			sq(8, 0.5, 19), tri(8, 2, 11), tri(10, 1, 7), tri(11, 1, 14),
-			sq(12, 0.5, 19), tri(12, 2, 16), tri(14, 2, 12),
+			tri(0, 2, 12), tri(2, 2, 16), tri(4, 2, 19), tri(6, 2, 16),
+			tri(8, 2, 14), tri(10, 2, 16), tri(12, 4, 12),
 		},
 		bass: []note{
-			tri(0, 4, -24), tri(4, 4, -19), tri(8, 4, -17), tri(12, 4, -24),
+			tri(0, 4, -12), tri(4, 4, -15), tri(8, 4, -10), tri(12, 4, -8),
 		},
 		percs: []perc{
-			kick(0, 0.5), kick(4, 0.5), kick(8, 0.5), kick(12, 0.5),
-			hat(2, 0.25), hat(6, 0.25), hat(10, 0.25), hat(14, 0.25),
+			kick(0, 0.6), kick(8, 0.6),
+			hat(4, 0.3), hat(12, 0.3),
 		},
 	},
 }
 
 // soundDur holds each effect's length in seconds.
 var soundDur = [...]float32{
-	SoundJump:       0.18,
-	SoundSlide:      0.32,
-	SoundSlam:       0.28,
-	SoundComb:       0.16,
-	SoundHairspray:  0.45,
-	SoundHit:        0.15,
-	SoundSnip:       0.22,
-	SoundCheckpoint: 0.55,
-	SoundStomp:      0.30,
-	SoundFall:       0.90,
-	SoundFanfare:    1.00,
-	SoundGameOver:   1.20,
-	SoundMenuMove:   0.05,
-	SoundMenuSelect: 0.12,
-	SoundExtraLife:  0.30,
-	SoundBossHit:    0.50,
-	SoundHonk:       0.35,
-	SoundMeow:       0.50,
+	SoundJump:        0.18,
+	SoundSlide:       0.32,
+	SoundSlam:        0.28,
+	SoundComb:        0.16,
+	SoundHairspray:   0.45,
+	SoundHit:         0.15,
+	SoundSnip:        0.22,
+	SoundCheckpoint:  0.55,
+	SoundStomp:       0.25,
+	SoundFall:        0.60,
+	SoundFanfare:     1.20,
+	SoundGameOver:    1.50,
+	SoundMenuMove:    0.08,
+	SoundMenuSelect:  0.25,
+	SoundExtraLife:   0.90,
+	SoundBossHit:     0.20,
+	SoundHonk:        0.50,
+	SoundMeow:        0.60,
 }
 
 // soundFrames returns the effect's length in stereo frames at sampleRate.
@@ -382,13 +380,13 @@ func soundFrames(s Sound, sampleRate int) int {
 }
 
 var (
-	combTeeth       = [3]float64{2200, 1800, 1400}
-	snipPitches     = [2]float64{3200, 2600}
-	checkpointNotes = [4]int{12, 16, 19, 24}
-	fanfareNotes    = [4]int{0, 4, 7, 12}
-	gameOverNotes   = [3]int{9, 5, 2}
-	menuSelectNotes = [2]float64{880, 1320}
-	extraLifeNotes  = [2]float64{660, 990}
+	combTeeth        = [3]float64{2200, 1800, 1400}
+	snipPitches      = [2]float64{3200, 2600}
+	checkpointNotes  = [4]int{12, 16, 19, 24}
+	fanfareNotes     = []int{12, 16, 19, 24, 28}
+	gameOverNotes    = []int{16, 12, 9, 5, 0}
+	menuSelectNotes  = []int{9, 16}
+	extraLifeNotes   = []int{0, 4, 7, 12, 16}
 )
 
 // fxEnvelope ramps a one-shot in and out so it starts and ends at zero.
@@ -400,6 +398,25 @@ func fxEnvelope(progress, attack, release float64) float64 {
 		return (1 - progress) / release
 	}
 	return 1
+}
+
+// seqEffect renders one frame of a sequence of pitches spread evenly over the
+// effect, each note fading in and out. It returns silence for an empty
+// sequence.
+func seqEffect(notes []int, progress, t, D float64, w wave) float32 {
+	n := len(notes)
+	if n == 0 {
+		return 0
+	}
+	seg := int(progress * float64(n))
+	if seg > n-1 {
+		seg = n - 1
+	}
+	segStart := float64(seg) / float64(n)
+	p := (progress - segStart) * float64(n)
+	phase := 2 * math.Pi * freqFor(notes[seg]) * (t - segStart*D)
+	out := waveSample(w, phase) * 0.6
+	return clampSample(out * fxEnvelope(p, 0.25, 0.45))
 }
 
 // renderEffect synthesizes one frame of a sound effect, deterministic in pos.
@@ -462,88 +479,48 @@ func renderEffect(s Sound, pos, dur, sampleRate int) float32 {
 		out := waveSample(waveTriangle, phase) * 0.6
 		return clampSample(out * fxEnvelope(p, 0.25, 0.45))
 	case SoundStomp:
-		phase := 2 * math.Pi * chirpPhase(t, D, 150, 50)
-		out := waveSample(waveSine, phase)*0.8 + noiseHash(uint32(pos))*0.4
-		return clampSample(out * fxEnvelope(progress, 0.01, 0.6))
+		phase := 2 * math.Pi * chirpPhase(t, D, 110, 45)
+		out := math.Sin(phase)*0.95 + noiseHash(uint32(pos))*0.4
+		return clampSample(out * fxEnvelope(progress, 0.01, 0.55))
 	case SoundFall:
-		phase := 2 * math.Pi * chirpPhase(t, D, 900, 150)
-		out := waveSample(waveTriangle, phase) * 0.6
+		phase := 2 * math.Pi * chirpPhase(t, D, 700, 150)
+		out := waveSample(waveTriangle, phase)*0.55 + noiseHash(uint32(pos))*0.25
+		if progress > 0.65 {
+			p := (progress - 0.65) / 0.35
+			thudPhase := 2 * math.Pi * chirpPhase(t-0.65*D, 0.35*D, 100, 45)
+			out += math.Sin(thudPhase) * 0.6 * fxEnvelope(p, 0.02, 0.5)
+		}
 		return clampSample(out * fxEnvelope(progress, 0.1, 0.4))
 	case SoundFanfare:
-		seg := int(progress * 4)
-		if seg > 3 {
-			seg = 3
-		}
-		segStart := float64(seg) / 4
-		p := (progress - segStart) * 4
-		phase := 2 * math.Pi * freqFor(fanfareNotes[seg]) * (t - segStart*D)
-		out := waveSample(waveSquare, phase) * 0.5
-		return clampSample(out * fxEnvelope(p, 0.2, 0.4))
+		return seqEffect(fanfareNotes, progress, t, D, waveSquare)
 	case SoundGameOver:
-		seg := int(progress * 3)
-		if seg > 2 {
-			seg = 2
-		}
-		segStart := float64(seg) / 3
-		p := (progress - segStart) * 3
-		phase := 2 * math.Pi * freqFor(gameOverNotes[seg]) * (t - segStart*D)
-		out := waveSample(waveTriangle, phase) * 0.55
-		return clampSample(out * fxEnvelope(p, 0.15, 0.5))
+		return seqEffect(gameOverNotes, progress, t, D, waveTriangle)
 	case SoundMenuMove:
-		phase := 2 * math.Pi * chirpPhase(t, D, 1200, 900)
-		out := waveSample(waveSine, phase) * 0.5
-		return clampSample(out * fxEnvelope(progress, 0.05, 0.5))
+		phase := 2 * math.Pi * chirpPhase(t, D, 900, 1100)
+		out := waveSample(waveSquare, phase) * 0.4
+		return clampSample(out * fxEnvelope(progress, 0.1, 0.6))
 	case SoundMenuSelect:
-		seg := 0
-		if progress >= 0.5 {
-			seg = 1
-		}
-		segStart := float64(seg) / 2
-		p := (progress - segStart) * 2
-		phase := 2 * math.Pi * menuSelectNotes[seg] * (t - segStart*D)
-		out := waveSample(waveSquare, phase) * 0.45
-		return clampSample(out * fxEnvelope(p, 0.15, 0.6))
+		return seqEffect(menuSelectNotes, progress, t, D, waveSquare)
 	case SoundExtraLife:
-		seg := 0
-		if progress >= 0.5 {
-			seg = 1
-		}
-		segStart := float64(seg) / 2
-		p := (progress - segStart) * 2
-		phase := 2 * math.Pi * extraLifeNotes[seg] * (t - segStart*D)
-		out := waveSample(waveTriangle, phase) * 0.6
-		return clampSample(out * fxEnvelope(p, 0.2, 0.4))
+		return seqEffect(extraLifeNotes, progress, t, D, waveTriangle)
 	case SoundBossHit:
-		phase := 2 * math.Pi * chirpPhase(t, D, 850, 120)
-		out := waveSample(waveSquare, phase)*0.6 + noiseHash(uint32(pos))*0.45
-		return clampSample(out * fxEnvelope(progress, 0.01, 0.6))
+		phase := 2 * math.Pi * chirpPhase(t, D, 180, 90)
+		out := waveSample(waveSquare, phase)*0.6 + noiseHash(uint32(pos))*0.4
+		return clampSample(out * fxEnvelope(progress, 0.01, 0.5))
 	case SoundHonk:
-		seg := 0
-		if progress >= 0.5 {
-			seg = 1
-		}
-		segStart := float64(seg) / 2
-		p := (progress - segStart) * 2
-		phase := 2 * math.Pi * 300 * (t - segStart*D)
-		out := waveSample(waveSquare, phase) * 0.55
-		return clampSample(out * fxEnvelope(p, 0.2, 0.5))
+		freqPhase := 2 * math.Pi * chirpPhase(t, D, 320, 270)
+		out := waveSample(waveSquare, freqPhase)*0.5 + waveSample(waveSquare, 2*freqPhase)*0.3
+		return clampSample(out * fxEnvelope(progress, 0.08, 0.35))
 	case SoundMeow:
-		seg := 0
-		if progress >= 0.5 {
-			seg = 1
-		}
-		segStart := float64(seg) / 2
-		segDur := D / 2
-		local := t - segStart*D
-		p := (progress - segStart) * 2
-		var phase float64
-		if seg == 0 {
-			phase = 2 * math.Pi * chirpPhase(local, segDur, 500, 800)
+		var freqPhase float64
+		if progress < 0.5 {
+			freqPhase = 2 * math.Pi * chirpPhase(t, 0.5*D, 420, 720)
 		} else {
-			phase = 2 * math.Pi * (chirpPhase(segDur, segDur, 500, 800) + chirpPhase(local, segDur, 800, 400))
+			freqPhase = 2 * math.Pi * chirpPhase(t-0.5*D, 0.5*D, 720, 380)
 		}
-		out := waveSample(waveSine, phase) * 0.6
-		return clampSample(out * fxEnvelope(p, 0.1, 0.3))
+		vibrato := 1 + 0.04*math.Sin(2*math.Pi*6*t)
+		out := waveSample(waveTriangle, freqPhase*vibrato) * 0.6
+		return clampSample(out * fxEnvelope(progress, 0.15, 0.4))
 	}
 	return 0
 }
