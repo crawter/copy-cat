@@ -9,7 +9,8 @@ package audio
 // Track identifies one looping music track.
 type Track int
 
-// The looping music tracks, one per world theme plus menu and boss themes.
+// The looping music tracks, one per world theme plus menu, boss and ending
+// themes.
 const (
 	// TrackMenu is the looping theme played on the main menu.
 	TrackMenu Track = iota
@@ -21,10 +22,13 @@ const (
 	TrackNeon
 	// TrackBoss is the tense, faster looping theme for the boss fight.
 	TrackBoss
+	// TrackEnding is the warm, triumphant theme played on the ending card and
+	// the credits roll.
+	TrackEnding
 )
 
 // trackCount is the number of tracks and bounds the mixer's loop caches.
-const trackCount = int(TrackBoss) + 1
+const trackCount = int(TrackEnding) + 1
 
 // Sound identifies one one-shot sound effect.
 type Sound int
@@ -135,8 +139,8 @@ func (m *Mixer) PlayMusic(t Track) {
 	if t < TrackMenu {
 		t = TrackMenu
 	}
-	if t > TrackBoss {
-		t = TrackBoss
+	if t > TrackEnding {
+		t = TrackEnding
 	}
 	m.musicTrack = t
 	m.musicStart = m.clock

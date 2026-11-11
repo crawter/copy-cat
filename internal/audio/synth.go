@@ -335,6 +335,23 @@ var trackDefs = [trackCount]trackDef{
 			hat(12.5, 0.15), hat(13.5, 0.15), hat(14.5, 0.15), hat(15.5, 0.15),
 		},
 	},
+	TrackEnding: trackDef{
+		bpm:   90,
+		beats: 16,
+		lead: []note{
+			sq(0, 0.5, 16), tri(0, 2, 4), tri(2, 1, 7), tri(3, 1, 12),
+			sq(4, 0.5, 17), tri(4, 2, 9), tri(6, 1, 5), tri(7, 1, 7),
+			sq(8, 0.5, 19), tri(8, 2, 11), tri(10, 1, 7), tri(11, 1, 14),
+			sq(12, 0.5, 19), tri(12, 2, 16), tri(14, 2, 12),
+		},
+		bass: []note{
+			tri(0, 4, -24), tri(4, 4, -19), tri(8, 4, -17), tri(12, 4, -24),
+		},
+		percs: []perc{
+			kick(0, 0.5), kick(4, 0.5), kick(8, 0.5), kick(12, 0.5),
+			hat(2, 0.25), hat(6, 0.25), hat(10, 0.25), hat(14, 0.25),
+		},
+	},
 }
 
 // soundDur holds each effect's length in seconds.

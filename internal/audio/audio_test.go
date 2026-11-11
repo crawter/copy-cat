@@ -26,7 +26,7 @@ func TestNewClampsSampleRate(t *testing.T) {
 }
 
 func TestEveryTrackRendersNonSilent(t *testing.T) {
-	tracks := []Track{TrackMenu, TrackMangroves, TrackHarbor, TrackNeon, TrackBoss}
+	tracks := []Track{TrackMenu, TrackMangroves, TrackHarbor, TrackNeon, TrackBoss, TrackEnding}
 	for _, tr := range tracks {
 		m := New(testSampleRate)
 		m.PlayMusic(tr)
@@ -154,7 +154,7 @@ func TestMixingClamps(t *testing.T) {
 }
 
 func TestFreshMixersRenderIdentically(t *testing.T) {
-	tracks := []Track{TrackMenu, TrackMangroves, TrackHarbor, TrackNeon, TrackBoss}
+	tracks := []Track{TrackMenu, TrackMangroves, TrackHarbor, TrackNeon, TrackBoss, TrackEnding}
 	for _, tr := range tracks {
 		a := New(testSampleRate)
 		b := New(testSampleRate)
@@ -177,7 +177,7 @@ func TestFreshMixersRenderIdentically(t *testing.T) {
 }
 
 func TestTracksLoopWithoutSeamClick(t *testing.T) {
-	tracks := []Track{TrackMenu, TrackMangroves, TrackHarbor, TrackNeon, TrackBoss}
+	tracks := []Track{TrackMenu, TrackMangroves, TrackHarbor, TrackNeon, TrackBoss, TrackEnding}
 	for _, tr := range tracks {
 		m := New(testSampleRate)
 		m.PlayMusic(tr)
