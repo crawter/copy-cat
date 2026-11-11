@@ -130,6 +130,10 @@ const (
 	copycatSpeedGap = 0.25
 	copycatChaseGap = 2.5
 	copycatMinGap   = 1.6
+
+	// sprintSpeed is the forward speed, in meters per second, at and above
+	// which the hero switches from the run pose to the sprint pose.
+	sprintSpeed = 12.0
 )
 
 // UI colors, drawn behind and over the screen text.
@@ -638,9 +642,9 @@ func storyWrap(text string, x, y, gap int) []ScreenLine {
 
 // drawScene draws the 3D scene behind play and pause: the generated corridor
 // with the hero and Copycat, or the boss arena with the hero and Copycat's
-// boss form. The hero is animated by the UI's per-frame animation clock.
-// During a run it also detects comb, snip and landing events and draws the
-// matching particle bursts.
+// boss form. The hero, Copycat and the boss are animated by the UI's
+// per-frame animation clock. During a run it also detects comb, snip and
+// landing events and draws the matching particle bursts.
 func (u *UI) drawScene(f *campaign.Flow) {
 	cam := u.cameraFor(f)
 	rl.BeginMode3D(cam)
@@ -650,13 +654,11 @@ func (u *UI) drawScene(f *campaign.Flow) {
 
 	if b := f.Boss(); b != nil {
 		DrawCmds(BuildBossArena(Cam{Lane: float64(b.HeroLane()), Z: 0, Height: 0}))
-		if !b.Vulnerable() {
-			DrawCmds(BuildArenaTelegraph(b.AttackLane(), b.AttackKind()))
-		}
+		DrawCmds(BuildBossTelegraph(b))
 		heroPos := Vec3{X: f32(laneX(float64(b.HeroLane()))), Y: 0, Z: 0}
 		u.drawModelAt(BuildHeroAt(BossPose(b.Jumping(), b.Sliding()), false, t), heroPos)
 		bossPos := Vec3{X: f32(laneX(float64(b.AttackLane()))), Y: 0, Z: 8}
-		u.drawModelAt(BuildBoss(b.Phase(), b.Vulnerable()), bossPos)
+		u.drawModelAt(BuildBossAt(b.Phase(), b.Vulnerable(), bossStanceFor(b), t), bossPos)
 		return
 	}
 
@@ -668,9 +670,11 @@ func (u *UI) drawScene(f *campaign.Flow) {
 	cam3 := Cam{Lane: r.Runner.Lane(), Z: r.Runner.Z(), Height: r.Runner.Height()}
 	DrawCmds(ApplyFog(BuildWorld(r.Level, theme, cam3), cam3, Palette(theme)))
 	pos := Vec3{X: f32(laneX(r.Runner.Lane())), Y: f32(r.Runner.Height()), Z: f32(r.Runner.Z())}
-	u.drawModelAt(BuildHeroAt(heroPoseFor(r), r.Bald, t), pos)
+	landing := u.prevAirborne && !r.Runner.Airborne()
+	pose := heroPoseFor(r.Runner.Slamming(), r.Runner.Sliding(), r.Runner.Airborne(), landing, r.Runner.Speed())
+	u.drawModelAt(BuildHeroAt(pose, r.Bald, t), pos)
 	chase := CopycatDistance(r.Runner.Speed(), r.Chase)
-	u.drawModelAt(BuildCopycat(chase), Vec3{X: pos.X, Y: 0, Z: pos.Z})
+	u.drawModelAt(BuildCopycatAt(chase, CopycatPoseWindup, t), Vec3{X: pos.X, Y: 0, Z: pos.Z})
 
 	u.updateRunOverlays(f, r, pos)
 	u.drawBursts()
@@ -749,8 +753,36 @@ func BossPose(jumping, sliding bool) HeroPose {
 	return PoseRun
 }
 
-func heroPoseFor(r *gameplay.Run) HeroPose {
-	return RunnerPose(r.Runner.Slamming(), r.Runner.Sliding(), r.Runner.Airborne())
+// heroPoseFor maps the runner's movement state to the hero pose the model
+// draws. It is pure so tests can cover every move without constructing a run.
+func heroPoseFor(slamming, sliding, airborne, landing bool, speed float64) HeroPose {
+	switch {
+	case slamming:
+		return PoseStomp
+	case sliding:
+		return PoseSlide
+	case airborne:
+		return PoseJump
+	case landing:
+		return PoseLanding
+	case speed >= sprintSpeed:
+		return PoseSprint
+	default:
+		return PoseRun
+	}
+}
+
+// bossStanceFor maps the boss fight state to the stance BuildBossAt draws:
+// idle during the vulnerable crouch, a jump/rear for a high swipe and an
+// attack wind-up for a low swipe.
+func bossStanceFor(b *gameplay.BossFight) BossStance {
+	if b.Vulnerable() {
+		return BossStanceIdle
+	}
+	if b.AttackKind() == gameplay.AttackHigh {
+		return BossStanceJump
+	}
+	return BossStanceWindup
 }
 
 // CopycatDistance returns how far behind the hero Copycat trails: a base gap
