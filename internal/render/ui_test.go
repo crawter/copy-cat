@@ -519,6 +519,85 @@ func assertStompDoesNotFireLanding(t *testing.T, f *campaign.Flow) {
 	t.Fatal("no airborne enemy stomp found within 100 seeds")
 }
 
+func TestTransitionsIncludeFadeSlideZoom(t *testing.T) {
+	kinds := transitionKinds()
+	got := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		got[k] = true
+	}
+	for _, want := range []string{"fade", "slide", "zoom"} {
+		if !got[want] {
+			t.Fatalf("transition kinds %v missing %q", kinds, want)
+		}
+	}
+}
+
+func TestSlideAndZoomSettle(t *testing.T) {
+	x, y := slideOffset(0, sceneTransitionDuration)
+	if x <= 0 {
+		t.Fatalf("slide at start = %d, want a visible entry offset", x)
+	}
+	if y != 0 {
+		t.Fatalf("slide y at start = %d, want 0", y)
+	}
+	if z := zoomScale(0, sceneTransitionDuration); z <= 1 {
+		t.Fatalf("zoom at start = %v, want > 1", z)
+	}
+
+	x, y = slideOffset(sceneTransitionDuration, sceneTransitionDuration)
+	if x != 0 || y != 0 {
+		t.Fatalf("slide after settle = (%d, %d), want (0, 0)", x, y)
+	}
+	if z := zoomScale(sceneTransitionDuration, sceneTransitionDuration); math.Abs(z-1) > 1e-9 {
+		t.Fatalf("zoom after settle = %v, want 1", z)
+	}
+}
+
+func TestRunOverlaysSpawnStompCheckpointAndSlideBursts(t *testing.T) {
+	f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	flat := levelgen.New(1, levelgen.Params{BaseSpeed: 8, Length: 30})
+	run := gameplay.NewRun(runner.New(flat, runner.DefaultConfig()), flat, 3)
+	u := NewUI(font.New())
+
+	u.updateRunOverlays(f, run, Vec3{}) // baseline
+	run.Stomps++
+	run.CheckpointZ = 5
+	u.updateRunOverlays(f, run, Vec3{})
+
+	if !hasBurst(u, BuildStompBurst()) {
+		t.Fatal("stomp burst not spawned on stomp")
+	}
+	if !hasBurst(u, BuildCheckpointShine()) {
+		t.Fatal("checkpoint shine not spawned on checkpoint change")
+	}
+
+	run.Step(runner.Input{Slide: true}, testDT)
+	u.updateRunOverlays(f, run, Vec3{})
+	if !run.Runner.Sliding() {
+		t.Fatal("hero did not start sliding")
+	}
+	if !hasBurst(u, BuildSlideSparks()) {
+		t.Fatal("slide sparks not spawned on slide")
+	}
+}
+
+func TestBossOverlaysSpawnHitBurst(t *testing.T) {
+	b := gameplay.NewBossFight(3)
+	u := NewUI(font.New())
+	u.updateBossOverlays(b, Vec3{})
+
+	for i := 0; i < 120 && b.Lives() == 3; i++ {
+		b.Step(runner.Input{}, testDT)
+	}
+	if b.Lives() == 3 {
+		t.Fatal("boss never landed a hit")
+	}
+	u.updateBossOverlays(b, Vec3{})
+	if !hasBurst(u, BuildBossHitBurst()) {
+		t.Fatal("boss hit burst not spawned on boss hit")
+	}
+}
+
 func TestPauseLinesEntriesAndHighlight(t *testing.T) {
 	f := newGameFlow(t)
 	f.Handle(campaign.ActionPause)

@@ -49,6 +49,22 @@ type UI struct {
 	prevAirborne   bool
 	airTracked     bool
 
+	// prevStomps, prevCheckpointZ and prevSliding are the last run state
+	// updateRunOverlays observed, so it can spawn stomp, checkpoint and slide
+	// particles exactly when those events happen.
+	prevStomps      int
+	prevCheckpointZ float64
+	prevSliding     bool
+	// prevBossLives is the last boss lives updateBossOverlays observed, so a
+	// boss hit spawns its particle once.
+	prevBossLives int
+
+	// slideX, slideY and zoom are the scene-change motion applied to the 2D
+	// screens alongside the fade.
+	slideX int
+	slideY int
+	zoom   float64
+
 	// caption and captionAt are the short play caption currently on screen.
 	caption   []ScreenLine
 	captionAt time.Time
@@ -78,7 +94,7 @@ type VolumeBar struct {
 // NewUI returns a UI that draws its text with fnt. The font is read-only and
 // safe to share.
 func NewUI(fnt *font.Font) *UI {
-	return &UI{fnt: fnt, scale: uiScale, sceneAt: time.Now()}
+	return &UI{fnt: fnt, scale: uiScale, sceneAt: time.Now(), prevBossLives: -1, zoom: 1}
 }
 
 // The screen layout is described in the font's unscaled pixel grid; Draw
@@ -107,6 +123,19 @@ const (
 	// sceneFadeDuration is how many seconds a scene-change fade takes to
 	// clear.
 	sceneFadeDuration = 0.35
+
+	// sceneTransitionDuration is how long the scene-change slide and zoom
+	// motions take, in seconds. It matches the fade so the three read as one
+	// scene change.
+	sceneTransitionDuration = sceneFadeDuration
+
+	// slideDistance is how far, in unscaled pixels, a new screen slides in
+	// from before settling.
+	slideDistance = 24.0
+
+	// zoomStart is the zoom factor at the very start of a scene change; it
+	// settles back to 1.
+	zoomStart = 1.06
 
 	// captionDuration is how many seconds a play caption stays on screen.
 	captionDuration = 1.6
@@ -168,41 +197,75 @@ const cameraPerspective = 0
 // Draw renders the scene for the flow's current state in a window of w by h
 // pixels. It clears the window, draws the 3D corridor or boss arena while
 // playing or paused, then draws the matching screen text and overlays a fade
-// when the scene just changed.
+// with a short slide and zoom when the scene just changed.
 func (u *UI) Draw(f *campaign.Flow, w, h int) {
 	rl.ClearBackground(rlColor(uiBackground))
 	u.anim += float64(rl.GetFrameTime())
 	u.trackScene(f)
+
+	elapsed := time.Since(u.sceneAt).Seconds()
+	u.slideX, u.slideY = slideOffset(elapsed, sceneTransitionDuration)
+	u.zoom = zoomScale(elapsed, sceneTransitionDuration)
+
 	switch f.Scene() {
 	case campaign.ScenePlay:
 		u.drawScene(f)
+		u.begin2D(w, h)
 		u.drawOverlay(u.caption, w, h, u.captionAt, captionDuration)
 		u.drawOverlay(u.introLines, w, h, u.introAt, levelIntroDuration)
 		u.drawLines(HUDLines(f), w, h, false)
+		u.end2D()
 	case campaign.ScenePause:
 		u.drawScene(f)
+		u.begin2D(w, h)
 		u.drawLines(MenuLines(f), w, h, true)
+		u.end2D()
 	case campaign.SceneStory, campaign.SceneEnding, campaign.SceneCredits:
+		u.begin2D(w, h)
 		u.drawLines(StoryLines(f), w, h, true)
+		u.end2D()
 	case campaign.SceneSettings:
 		lines := MenuLines(f)
+		u.begin2D(w, h)
 		u.drawLines(lines, w, h, true)
 		u.drawVolumeBars(f, lines, w, h)
+		u.end2D()
 	case campaign.SceneMainMenu:
 		lines := MenuLines(f)
 		if len(lines) > 0 {
 			lines[0].Y += logoOffset(u.anim)
 		}
+		u.begin2D(w, h)
 		u.drawLines(lines, w, h, true)
+		u.end2D()
 	default:
+		u.begin2D(w, h)
 		u.drawLines(MenuLines(f), w, h, true)
+		u.end2D()
 	}
 	u.drawFade(w, h)
 }
 
-// trackScene records when the flow changes scene so the fade can restart. A
-// transition into play that is not a pause resume also resets the one-shot
-// play overlays, because that is when a new run or boss fight begins.
+// begin2D starts a 2D camera that centers on the window and applies the
+// scene-change slide and zoom. end2D must match every call.
+func (u *UI) begin2D(w, h int) {
+	cam := rl.Camera2D{
+		Offset: rl.Vector2{X: float32(w)/2 + float32(u.slideX), Y: float32(h)/2 + float32(u.slideY)},
+		Target: rl.Vector2{X: float32(w) / 2, Y: float32(h) / 2},
+		Zoom:   float32(u.zoom),
+	}
+	rl.BeginMode2D(cam)
+}
+
+// end2D ends the 2D camera started by begin2D.
+func (u *UI) end2D() {
+	rl.EndMode2D()
+}
+
+// trackScene records when the flow changes scene so the fade and the slide
+// and zoom motions can restart. A transition into play that is not a pause
+// resume also resets the one-shot play overlays, because that is when a new
+// run or boss fight begins.
 func (u *UI) trackScene(f *campaign.Flow) {
 	if f.Scene() == u.scene {
 		return
@@ -224,10 +287,14 @@ func (u *UI) beginPlay(f *campaign.Flow) {
 	u.captionAt = time.Time{}
 	u.bursts = nil
 	u.airTracked = false
+	u.prevBossLives = -1
 	if r := f.Run(); r != nil {
 		u.prevTotalCombs = r.TotalCombs
 		u.prevBald = r.Bald
 		u.prevLivesLost = r.LivesLost
+		u.prevStomps = r.Stomps
+		u.prevCheckpointZ = r.CheckpointZ
+		u.prevSliding = r.Runner.Sliding()
 		u.prevAirborne = r.Runner.Airborne()
 		u.airTracked = true
 	}
@@ -298,6 +365,41 @@ func fadeAlpha(elapsed, duration float64) float64 {
 		return 0
 	}
 	return 1 - elapsed/duration
+}
+
+// transitionKinds lists the scene-change motions Draw applies, so tests can
+// pin that slide and zoom accompany the fade.
+func transitionKinds() []string {
+	return []string{"fade", "slide", "zoom"}
+}
+
+// transitionProgress maps the elapsed seconds of a scene change to a [0, 1]
+// progress with the same linear shape as the fade.
+func transitionProgress(elapsed, duration float64) float64 {
+	if duration <= 0 {
+		return 1
+	}
+	if elapsed <= 0 {
+		return 0
+	}
+	if elapsed >= duration {
+		return 1
+	}
+	return elapsed / duration
+}
+
+// slideOffset returns the screen-space slide at elapsed seconds into a scene
+// change. The new screen enters from the right and settles at the origin.
+func slideOffset(elapsed, duration float64) (int, int) {
+	p := transitionProgress(elapsed, duration)
+	return int(math.Round(slideDistance * (1 - p))), 0
+}
+
+// zoomScale returns the scale at elapsed seconds into a scene change: it
+// starts slightly zoomed in and settles to 1.
+func zoomScale(elapsed, duration float64) float64 {
+	p := transitionProgress(elapsed, duration)
+	return zoomStart + (1-zoomStart)*p
 }
 
 // logoOffset returns the subtle vertical offset, in unscaled pixels, of the
@@ -643,8 +745,8 @@ func storyWrap(text string, x, y, gap int) []ScreenLine {
 // drawScene draws the 3D scene behind play and pause: the generated corridor
 // with the hero and Copycat, or the boss arena with the hero and Copycat's
 // boss form. The hero, Copycat and the boss are animated by the UI's
-// per-frame animation clock. During a run it also detects comb, snip and
-// landing events and draws the matching particle bursts.
+// per-frame animation clock. During a run it also detects comb, snip, stomp,
+// checkpoint and slide events and draws the matching particle bursts.
 func (u *UI) drawScene(f *campaign.Flow) {
 	cam := u.cameraFor(f)
 	rl.BeginMode3D(cam)
@@ -659,6 +761,8 @@ func (u *UI) drawScene(f *campaign.Flow) {
 		u.drawModelAt(BuildHeroAt(BossPose(b.Jumping(), b.Sliding()), false, t), heroPos)
 		bossPos := Vec3{X: f32(laneX(float64(b.AttackLane()))), Y: 0, Z: 8}
 		u.drawModelAt(BuildBossAt(b.Phase(), b.Vulnerable(), bossStanceFor(b), t), bossPos)
+		u.updateBossOverlays(b, heroPos)
+		u.drawBursts()
 		return
 	}
 
@@ -668,7 +772,7 @@ func (u *UI) drawScene(f *campaign.Flow) {
 	}
 	theme := runTheme(f)
 	cam3 := Cam{Lane: r.Runner.Lane(), Z: r.Runner.Z(), Height: r.Runner.Height()}
-	DrawCmds(ApplyFog(BuildWorld(r.Level, theme, cam3), cam3, Palette(theme)))
+	DrawCmds(ApplyFog(BuildWorldAt(r.Level, theme, cam3, t), cam3, Palette(theme)))
 	pos := Vec3{X: f32(laneX(r.Runner.Lane())), Y: f32(r.Runner.Height()), Z: f32(r.Runner.Z())}
 	landing := u.prevAirborne && !r.Runner.Airborne()
 	pose := heroPoseFor(r.Runner.Slamming(), r.Runner.Sliding(), r.Runner.Airborne(), landing, r.Runner.Speed())
@@ -796,13 +900,28 @@ func CopycatDistance(speed, chase float64) float64 {
 	return gap
 }
 
-// updateRunOverlays tracks the run counters and the hero's airborne state,
-// spawning the matching caption and particle burst on comb pickups, snips and
-// landings.
+// updateBossOverlays tracks the boss's lives and spawns the boss-hit burst
+// exactly when an attack lands and costs a life.
+func (u *UI) updateBossOverlays(b *gameplay.BossFight, pos Vec3) {
+	if u.prevBossLives < 0 {
+		u.prevBossLives = b.Lives()
+		return
+	}
+	if b.Lives() < u.prevBossLives {
+		u.spawnBurst(BuildBossHitBurst(), pos)
+	}
+	u.prevBossLives = b.Lives()
+}
+
+// updateRunOverlays tracks the run counters and the hero's airborne, sliding
+// and checkpoint state, spawning the matching caption and particle burst on
+// comb pickups, snips, landings, stomps, checkpoints and slides.
 func (u *UI) updateRunOverlays(f *campaign.Flow, r *gameplay.Run, pos Vec3) {
 	air := r.Runner.Airborne()
+	sliding := r.Runner.Sliding()
 	if !u.airTracked {
 		u.prevAirborne = air
+		u.prevSliding = sliding
 		u.airTracked = true
 	}
 
@@ -818,11 +937,23 @@ func (u *UI) updateRunOverlays(f *campaign.Flow, r *gameplay.Run, pos Vec3) {
 		u.showCaption(LandingCaption(f))
 		u.spawnBurst(BuildLandingBurst(), pos)
 	}
+	if r.Stomps > u.prevStomps {
+		u.spawnBurst(BuildStompBurst(), pos)
+	}
+	if r.CheckpointZ != u.prevCheckpointZ {
+		u.spawnBurst(BuildCheckpointShine(), pos)
+	}
+	if sliding && !u.prevSliding {
+		u.spawnBurst(BuildSlideSparks(), pos)
+	}
 
 	u.prevTotalCombs = r.TotalCombs
 	u.prevBald = r.Bald
 	u.prevLivesLost = r.LivesLost
 	u.prevAirborne = air
+	u.prevSliding = sliding
+	u.prevStomps = r.Stomps
+	u.prevCheckpointZ = r.CheckpointZ
 }
 
 func (u *UI) showCaption(lines []ScreenLine) {
