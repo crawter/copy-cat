@@ -164,6 +164,11 @@ func (b *BossFight) Jumping() bool {
 	return b.jumping
 }
 
+// Sliding reports whether the hero is low in a grounded slide.
+func (b *BossFight) Sliding() bool {
+	return b.sliding
+}
+
 // AttackLane returns the lane Copycat occupies. During a telegraphed attack it
 // is the attack lane; during a vulnerable window it is the crouch lane to
 // stomp.

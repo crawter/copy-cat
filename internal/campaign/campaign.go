@@ -167,6 +167,8 @@ const (
 	SceneLanguagePick Scene = iota
 	// SceneMainMenu is the main menu.
 	SceneMainMenu
+	// SceneNewGameConfirm asks before New Game erases progress.
+	SceneNewGameConfirm
 	// SceneMap is the campaign level selection map.
 	SceneMap
 	// SceneSettings is the settings screen.
@@ -214,8 +216,10 @@ type StoryKind int
 
 // The story cards the flow shows.
 const (
+	// StoryIntro is the card shown at the start of a new game.
+	StoryIntro StoryKind = iota
 	// StoryWorld2 is the card shown between worlds 1 and 2.
-	StoryWorld2 StoryKind = iota
+	StoryWorld2
 	// StoryWorld3 is the card shown between worlds 2 and 3.
 	StoryWorld3
 	// StoryEnding is the card shown after the boss is won.
@@ -304,6 +308,9 @@ type Flow struct {
 	mapSel  int
 	setSel  int
 	overSel int
+
+	pauseSel   int
+	confirmSel int
 }
 
 // NewFlow returns a flow for campaign c carrying settings s and progress p.
@@ -359,18 +366,22 @@ func (f *Flow) Run() *gameplay.Run { return f.run }
 func (f *Flow) Boss() *gameplay.BossFight { return f.boss }
 
 // MenuIndex returns the zero-based index of the highlighted selection in the
-// current scene's list: the language pick, main menu, map, settings or game
-// over. Scenes without a selection report 0.
+// current scene's list: the language pick, main menu, New Game confirmation,
+// map, settings, pause or game over. Scenes without a selection report 0.
 func (f *Flow) MenuIndex() int {
 	switch f.scene {
 	case SceneLanguagePick:
 		return f.langSel
 	case SceneMainMenu:
 		return f.menuSel
+	case SceneNewGameConfirm:
+		return f.confirmSel
 	case SceneMap:
 		return f.mapSel
 	case SceneSettings:
 		return f.setSel
+	case ScenePause:
+		return f.pauseSel
 	case SceneGameOver:
 		return f.overSel
 	default:
@@ -385,18 +396,19 @@ func (f *Flow) Handle(a Action) {
 		f.handleLanguagePick(a)
 	case SceneMainMenu:
 		f.handleMainMenu(a)
+	case SceneNewGameConfirm:
+		f.handleNewGameConfirm(a)
 	case SceneMap:
 		f.handleMap(a)
 	case SceneSettings:
 		f.handleSettings(a)
 	case ScenePlay:
 		if a == ActionPause {
+			f.pauseSel = 0
 			f.scene = ScenePause
 		}
 	case ScenePause:
-		if a == ActionPause {
-			f.scene = ScenePlay
-		}
+		f.handlePause(a)
 	case SceneGameOver:
 		f.handleGameOver(a)
 	case SceneLevelEnd:
@@ -606,6 +618,18 @@ func (f *Flow) continueGame() {
 	f.StartLevel(highest)
 }
 
+// startNewGame resets campaign progress and opens the story intro.
+func (f *Flow) startNewGame() {
+	f.progress = NewProgress()
+	f.run = nil
+	f.boss = nil
+	f.endless = false
+	f.currentID = 0
+	f.maxZ = 0
+	f.story = StoryIntro
+	f.scene = SceneStory
+}
+
 // The main menu items, in display order.
 const (
 	menuContinue = iota
@@ -645,8 +669,8 @@ func (f *Flow) handleMainMenu(a Action) {
 		case menuContinue:
 			f.continueGame()
 		case menuNewGame:
-			f.progress = NewProgress()
-			f.StartLevel(1)
+			f.confirmSel = confirmNo
+			f.scene = SceneNewGameConfirm
 		case menuMap:
 			f.scene = SceneMap
 			f.mapSel = 0
@@ -658,6 +682,64 @@ func (f *Flow) handleMainMenu(a Action) {
 		case menuQuit:
 			f.quit = true
 		}
+	}
+}
+
+// The pause items, in display order.
+const (
+	pauseResume = iota
+	pauseRestart
+	pauseMenu
+	pauseCount
+)
+
+// handlePause moves the pause menu. ActionPause stays an immediate resume
+// shortcut; the menu also offers Resume, Restart and Back to menu.
+func (f *Flow) handlePause(a Action) {
+	switch a {
+	case ActionPause:
+		f.scene = ScenePlay
+	case ActionUp:
+		f.pauseSel = (f.pauseSel - 1 + pauseCount) % pauseCount
+	case ActionDown:
+		f.pauseSel = (f.pauseSel + 1) % pauseCount
+	case ActionConfirm:
+		switch f.pauseSel {
+		case pauseResume:
+			f.scene = ScenePlay
+		case pauseRestart:
+			f.Retry()
+		case pauseMenu:
+			f.toMainMenu()
+		}
+	}
+}
+
+// The New Game confirmation items, in display order.
+const (
+	confirmYes = iota
+	confirmNo
+	confirmCount
+)
+
+// handleNewGameConfirm moves the New Game confirmation. Confirming Yes erases
+// progress and starts the story intro; No and Back return to the main menu
+// with progress unchanged.
+func (f *Flow) handleNewGameConfirm(a Action) {
+	switch a {
+	case ActionUp:
+		f.confirmSel = (f.confirmSel - 1 + confirmCount) % confirmCount
+	case ActionDown:
+		f.confirmSel = (f.confirmSel + 1) % confirmCount
+	case ActionConfirm:
+		switch f.confirmSel {
+		case confirmYes:
+			f.startNewGame()
+		case confirmNo:
+			f.toMainMenu()
+		}
+	case ActionBack:
+		f.toMainMenu()
 	}
 }
 
@@ -795,12 +877,14 @@ func (f *Flow) handleLevelEnd(a Action) {
 	}
 }
 
-// handleStory continues past a world story card into the next world.
+// handleStory continues past a story card into the next level.
 func (f *Flow) handleStory(a Action) {
 	if a != ActionConfirm {
 		return
 	}
 	switch f.story {
+	case StoryIntro:
+		f.StartLevel(1)
 	case StoryWorld2:
 		f.StartLevel(4)
 	case StoryWorld3:
