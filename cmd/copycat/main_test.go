@@ -181,6 +181,51 @@ func TestBossTransitionSounds(t *testing.T) {
 	}
 }
 
+func TestVolumePreviewSound(t *testing.T) {
+	tests := []struct {
+		name      string
+		prev, cur campaign.Settings
+		want      audio.Sound
+		play      bool
+	}{
+		{
+			name: "music change",
+			prev: campaign.Settings{MusicVolume: 0.5, SoundVolume: 0.5},
+			cur:  campaign.Settings{MusicVolume: 0.75, SoundVolume: 0.5},
+			want: audio.SoundMenuSelect,
+			play: true,
+		},
+		{
+			name: "sound change",
+			prev: campaign.Settings{MusicVolume: 0.5, SoundVolume: 0.5},
+			cur:  campaign.Settings{MusicVolume: 0.5, SoundVolume: 0.75},
+			want: audio.SoundMenuSelect,
+			play: true,
+		},
+		{
+			name: "no change",
+			prev: campaign.Settings{MusicVolume: 0.5, SoundVolume: 0.5},
+			cur:  campaign.Settings{MusicVolume: 0.5, SoundVolume: 0.5},
+		},
+		{
+			name: "non-volume change",
+			prev: campaign.Settings{MusicVolume: 0.5, SoundVolume: 0.5, Fullscreen: false},
+			cur:  campaign.Settings{MusicVolume: 0.5, SoundVolume: 0.5, Fullscreen: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := volumePreviewSound(tt.prev, tt.cur)
+			if ok != tt.play {
+				t.Fatalf("volumePreviewSound(%+v, %+v) ok = %v, want %v", tt.prev, tt.cur, ok, tt.play)
+			}
+			if ok && got != tt.want {
+				t.Fatalf("volumePreviewSound(%+v, %+v) sound = %v, want %v", tt.prev, tt.cur, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTrackForScene(t *testing.T) {
 	c := campaign.Default()
 
