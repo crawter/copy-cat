@@ -1,6 +1,6 @@
-# copy-cat
+# Hair Raid
 
-copy-cat is a small but complete 3D corridor runner that sits between Crash Bandicoot and Subway Surfers. You play Downald D, a proboscis monkey with tremendous hair, auto-running through an auto-generated corridor world. Chasing him is Copycat, the cat barber, who wants that hair for himself.
+Hair Raid is a small but complete 3D corridor runner that sits between Crash Bandicoot and Subway Surfers. You play Downald D, a proboscis monkey with tremendous hair, auto-running through an auto-generated corridor world. Chasing him is Copycat, the cat barber, who wants that hair for himself.
 
 ## Requirements
 
@@ -37,7 +37,8 @@ go test ./...
 - Arrow keys — switch lanes left and right
 - ArrowUp or Space — jump
 - ArrowDown — slide; press it in the air to slam down
-- Esc — pause during a run
+- P — pause during a run
+- Q — quit
 
 In menus:
 
