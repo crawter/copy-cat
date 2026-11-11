@@ -38,11 +38,11 @@ func TestStoryUAHasNoForbiddenRunes(t *testing.T) {
 	}
 }
 
-func TestStoryCardsCoverThreeKinds(t *testing.T) {
-	if len(StoryCards) != 3 {
-		t.Fatalf("len(StoryCards) = %d, want 3", len(StoryCards))
+func TestStoryCardsCoverFourKinds(t *testing.T) {
+	if len(StoryCards) != 4 {
+		t.Fatalf("len(StoryCards) = %d, want 4", len(StoryCards))
 	}
-	for _, k := range []StoryKind{StoryWorld2, StoryWorld3, StoryEnding} {
+	for _, k := range []StoryKind{StoryIntro, StoryWorld2, StoryWorld3, StoryEnding} {
 		if StoryCards[k].EN == "" || StoryCards[k].UA == "" {
 			t.Errorf("StoryCards[%d] is not filled", k)
 		}

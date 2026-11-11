@@ -8,9 +8,14 @@ package campaign
 import "copycat/internal/gameplay"
 
 // StoryCards holds one mockumentary paragraph per StoryKind, in StoryKind
-// order: the world 2 opening, the world 3 opening and the ending. The ending
-// pays off the D joke without revealing what the D stands for.
+// order: the opening, the world 2 opening, the world 3 opening and the
+// ending. The ending pays off the D joke without revealing what the D stands
+// for.
 var StoryCards = []Line{
+	StoryIntro: {
+		EN: "Downald D has the greatest hair in the mangroves, and Copycat wants it. The scissors are sharp, the cat is fast, and the paperwork can wait. The narrator would offer a plan. The narrator has only pity.",
+		UA: "У Downald D найкраща зачіска в мангрів, і Копікет її прагне. Ножиці гострі, кіт швидкий, а документи можуть почекати. Оповідач запропонував би план. Оповідач має лише жаль.",
+	},
 	StoryWorld2: {
 		EN: "The proboscis monkey, Downald D, has escaped the mangroves. Gary's family has finally stopped filing paperwork. Now the rusty harbor opens ahead, a place where even the seagulls keep receipts. The narrator would wish him luck. The narrator has seen the containers.",
 		UA: "Носач Downald D утік із мангрів. Родина Гриця нарешті припинила подавати документи. Попереду розкривається іржава гавань — місце, де навіть чайки зберігають чеки. Оповідач побажав би йому удачі. Оповідач бачив ті контейнери.",

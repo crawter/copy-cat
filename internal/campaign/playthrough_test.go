@@ -56,8 +56,15 @@ func TestFullCampaignPlaythrough(t *testing.T) {
 
 	f.Handle(ActionDown) // New Game
 	f.Handle(ActionConfirm)
+	if f.Scene() != SceneStory {
+		t.Fatalf("Scene = %v after New Game, want SceneStory", f.Scene())
+	}
+	if f.Story() != StoryIntro {
+		t.Fatalf("Story = %v after New Game, want StoryIntro", f.Story())
+	}
+	f.Handle(ActionConfirm) // StoryIntro → level 1
 	if f.Scene() != ScenePlay {
-		t.Fatalf("Scene = %v after New Game, want ScenePlay", f.Scene())
+		t.Fatalf("Scene = %v after StoryIntro confirm, want ScenePlay", f.Scene())
 	}
 
 	for levelID := 1; levelID <= 9; levelID++ {

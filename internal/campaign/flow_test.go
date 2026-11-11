@@ -39,6 +39,35 @@ func TestFreshFlowOpensLanguagePickAndStoresChoice(t *testing.T) {
 	}
 }
 
+func TestNewGameOpensStoryIntroThenStartsLevel1(t *testing.T) {
+	c := finishingCampaign()
+	f := NewFlow(c, DefaultSettings(), Progress{Unlocked: 5, Completed: true, BestEndless: 42}, false)
+
+	// Select New Game (the second menu item).
+	f.Handle(ActionDown)
+	f.Handle(ActionConfirm)
+
+	if f.Scene() != SceneStory {
+		t.Fatalf("Scene = %v after New Game, want SceneStory", f.Scene())
+	}
+	if f.Story() != StoryIntro {
+		t.Fatalf("Story = %v after New Game, want StoryIntro", f.Story())
+	}
+	if got := f.Progress(); got != NewProgress() {
+		t.Fatalf("Progress after New Game = %+v, want %+v", got, NewProgress())
+	}
+
+	// Confirming the intro card starts level 1.
+	f.Handle(ActionConfirm)
+	if f.Scene() != ScenePlay {
+		t.Fatalf("Scene = %v after StoryIntro confirm, want ScenePlay", f.Scene())
+	}
+	lv, ok := f.CurrentLevel()
+	if !ok || lv.ID != 1 {
+		t.Fatalf("CurrentLevel = %+v, %v, want level 1", lv, ok)
+	}
+}
+
 func TestNewGameStartsLevel1AndFinishUnlocksLevel2(t *testing.T) {
 	c := finishingCampaign()
 	f := NewFlow(c, DefaultSettings(), Progress{Unlocked: 5, Completed: true, BestEndless: 42}, false)
@@ -47,15 +76,24 @@ func TestNewGameStartsLevel1AndFinishUnlocksLevel2(t *testing.T) {
 	f.Handle(ActionDown)
 	f.Handle(ActionConfirm)
 
+	if f.Scene() != SceneStory {
+		t.Fatalf("Scene = %v after New Game, want SceneStory", f.Scene())
+	}
+	if f.Story() != StoryIntro {
+		t.Fatalf("Story = %v after New Game, want StoryIntro", f.Story())
+	}
+	if got := f.Progress(); got != NewProgress() {
+		t.Fatalf("Progress after New Game = %+v, want %+v", got, NewProgress())
+	}
+
+	// Confirming the intro card starts level 1.
+	f.Handle(ActionConfirm)
 	if f.Scene() != ScenePlay {
-		t.Fatalf("Scene = %v after New Game, want ScenePlay", f.Scene())
+		t.Fatalf("Scene = %v after StoryIntro confirm, want ScenePlay", f.Scene())
 	}
 	lv, ok := f.CurrentLevel()
 	if !ok || lv.ID != 1 {
 		t.Fatalf("CurrentLevel = %+v, %v, want level 1", lv, ok)
-	}
-	if got := f.Progress(); got != NewProgress() {
-		t.Fatalf("Progress after New Game = %+v, want %+v", got, NewProgress())
 	}
 
 	finishRun(t, f)
@@ -224,8 +262,12 @@ func TestGameOverRetriesSameLevelWithFreshLivesAndPauseBlocks(t *testing.T) {
 	// New Game.
 	f.Handle(ActionDown)
 	f.Handle(ActionConfirm)
+	if f.Scene() != SceneStory {
+		t.Fatalf("Scene = %v after New Game, want SceneStory", f.Scene())
+	}
+	f.Handle(ActionConfirm) // StoryIntro → level 1.
 	if f.Scene() != ScenePlay {
-		t.Fatalf("Scene = %v after New Game, want ScenePlay", f.Scene())
+		t.Fatalf("Scene = %v after StoryIntro confirm, want ScenePlay", f.Scene())
 	}
 
 	// Pause stops the run and blocks StepRun.

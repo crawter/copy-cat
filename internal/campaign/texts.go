@@ -11,7 +11,10 @@ type Line struct {
 }
 
 // GameTitle is the main menu's heading.
-var GameTitle = Line{EN: "Copycat", UA: "Copycat"}
+var GameTitle = Line{EN: "Hair Raid", UA: "Hair Raid"}
+
+// TitleTagline is the one-line pitch shown under the main menu heading.
+var TitleTagline = Line{EN: "Outrun the cat. Keep the hair.", UA: "Випереди кота. Збережи зачіску."}
 
 // MainMenuItems holds the main menu entries in selection order.
 var MainMenuItems = []Line{

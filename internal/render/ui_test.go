@@ -279,6 +279,10 @@ func newGameFlow(t *testing.T) *campaign.Flow {
 	f := campaign.NewFlow(flatCampaign(), campaign.DefaultSettings(), campaign.NewProgress(), false)
 	f.Handle(campaign.ActionDown) // New Game
 	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.SceneStory {
+		t.Fatalf("scene = %v, want SceneStory", f.Scene())
+	}
+	f.Handle(campaign.ActionConfirm) // StoryIntro → level 1
 	if f.Scene() != campaign.ScenePlay {
 		t.Fatalf("scene = %v, want ScenePlay", f.Scene())
 	}
@@ -316,6 +320,10 @@ func gameOverFlow(t *testing.T) *campaign.Flow {
 	f := campaign.NewFlow(c, campaign.DefaultSettings(), campaign.NewProgress(), false)
 	f.Handle(campaign.ActionDown) // New Game
 	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.SceneStory {
+		t.Fatalf("scene = %v, want SceneStory", f.Scene())
+	}
+	f.Handle(campaign.ActionConfirm) // StoryIntro → level 1
 	if f.Scene() != campaign.ScenePlay {
 		t.Fatalf("scene = %v, want ScenePlay", f.Scene())
 	}
