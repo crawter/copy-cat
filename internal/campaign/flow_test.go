@@ -47,8 +47,19 @@ func TestNewGameOpensStoryIntroThenStartsLevel1(t *testing.T) {
 	f.Handle(ActionDown)
 	f.Handle(ActionConfirm)
 
+	if f.Scene() != SceneNewGameConfirm {
+		t.Fatalf("Scene = %v after New Game, want SceneNewGameConfirm", f.Scene())
+	}
+	if got := f.Progress(); got != (Progress{Unlocked: 5, Completed: true, BestEndless: 42}) {
+		t.Fatalf("Progress changed before confirmation: %+v", got)
+	}
+
+	// Confirm Yes to erase progress.
+	f.Handle(ActionUp)
+	f.Handle(ActionConfirm)
+
 	if f.Scene() != SceneStory {
-		t.Fatalf("Scene = %v after New Game, want SceneStory", f.Scene())
+		t.Fatalf("Scene = %v after New Game confirm, want SceneStory", f.Scene())
 	}
 	if f.Story() != StoryIntro {
 		t.Fatalf("Story = %v after New Game, want StoryIntro", f.Story())
@@ -76,8 +87,19 @@ func TestNewGameStartsLevel1AndFinishUnlocksLevel2(t *testing.T) {
 	f.Handle(ActionDown)
 	f.Handle(ActionConfirm)
 
+	if f.Scene() != SceneNewGameConfirm {
+		t.Fatalf("Scene = %v after New Game, want SceneNewGameConfirm", f.Scene())
+	}
+	if got := f.Progress(); got != (Progress{Unlocked: 5, Completed: true, BestEndless: 42}) {
+		t.Fatalf("Progress changed before confirmation: %+v", got)
+	}
+
+	// Confirm Yes to erase progress.
+	f.Handle(ActionUp)
+	f.Handle(ActionConfirm)
+
 	if f.Scene() != SceneStory {
-		t.Fatalf("Scene = %v after New Game, want SceneStory", f.Scene())
+		t.Fatalf("Scene = %v after New Game confirm, want SceneStory", f.Scene())
 	}
 	if f.Story() != StoryIntro {
 		t.Fatalf("Story = %v after New Game, want StoryIntro", f.Story())
@@ -262,8 +284,13 @@ func TestGameOverRetriesSameLevelWithFreshLivesAndPauseBlocks(t *testing.T) {
 	// New Game.
 	f.Handle(ActionDown)
 	f.Handle(ActionConfirm)
+	if f.Scene() != SceneNewGameConfirm {
+		t.Fatalf("Scene = %v after New Game, want SceneNewGameConfirm", f.Scene())
+	}
+	f.Handle(ActionUp) // Yes
+	f.Handle(ActionConfirm)
 	if f.Scene() != SceneStory {
-		t.Fatalf("Scene = %v after New Game, want SceneStory", f.Scene())
+		t.Fatalf("Scene = %v after New Game confirm, want SceneStory", f.Scene())
 	}
 	f.Handle(ActionConfirm) // StoryIntro → level 1.
 	if f.Scene() != ScenePlay {
@@ -518,6 +545,129 @@ func TestEndlessDeathUpdatesBestEndless(t *testing.T) {
 	}
 	if f.Endless() {
 		t.Fatalf("Endless = true after leaving endless level end, want false")
+	}
+}
+
+func TestPauseOffersResumeRestartAndMenu(t *testing.T) {
+	c := finishingCampaign()
+	f := NewFlow(c, DefaultSettings(), NewProgress(), false)
+	f.StartLevel(1)
+	if f.Scene() != ScenePlay {
+		t.Fatalf("Scene = %v, want ScenePlay", f.Scene())
+	}
+
+	// Pause opens the menu with Resume highlighted.
+	f.Handle(ActionPause)
+	if f.Scene() != ScenePause {
+		t.Fatalf("Scene = %v after pause, want ScenePause", f.Scene())
+	}
+	if f.MenuIndex() != pauseResume {
+		t.Fatalf("MenuIndex = %d at pause, want %d (Resume)", f.MenuIndex(), pauseResume)
+	}
+
+	// Resume returns to play.
+	f.Handle(ActionConfirm)
+	if f.Scene() != ScenePlay {
+		t.Fatalf("Scene = %v after Resume, want ScenePlay", f.Scene())
+	}
+
+	// Restart rebuilds the run with fresh lives at the start.
+	f.Handle(ActionPause)
+	f.Run().Lives = 1
+	f.Run().Runner.Restart(12)
+	f.Handle(ActionDown) // Restart
+	f.Handle(ActionConfirm)
+	if f.Scene() != ScenePlay {
+		t.Fatalf("Scene = %v after Restart, want ScenePlay", f.Scene())
+	}
+	if f.Run() == nil {
+		t.Fatal("Run = nil after Restart")
+	}
+	if got := f.Run().Lives; got != c.StartLives {
+		t.Fatalf("Lives = %d after Restart, want %d", got, c.StartLives)
+	}
+	if got := f.Run().Runner.Z(); got != 0 {
+		t.Fatalf("runner Z = %v after Restart, want 0", got)
+	}
+
+	// Back to menu returns to the main menu and clears the run.
+	f.Handle(ActionPause)
+	f.Handle(ActionDown)
+	f.Handle(ActionDown) // Back to menu
+	f.Handle(ActionConfirm)
+	if f.Scene() != SceneMainMenu {
+		t.Fatalf("Scene = %v after Back to menu, want SceneMainMenu", f.Scene())
+	}
+	if f.Run() != nil || f.Boss() != nil {
+		t.Fatalf("active run/boss remains after Back to menu")
+	}
+
+	// ActionPause stays an immediate resume shortcut.
+	f.StartLevel(1)
+	f.Handle(ActionPause)
+	if f.Scene() != ScenePause {
+		t.Fatalf("Scene = %v after second pause, want ScenePause", f.Scene())
+	}
+	f.Handle(ActionPause)
+	if f.Scene() != ScenePlay {
+		t.Fatalf("Scene = %v after ActionPause resume, want ScenePlay", f.Scene())
+	}
+}
+
+func TestNewGameConfirmsBeforeErasingProgress(t *testing.T) {
+	c := finishingCampaign()
+	before := Progress{Unlocked: 5, Completed: true, BestEndless: 42}
+	f := NewFlow(c, DefaultSettings(), before, false)
+
+	// Selecting New Game opens the confirmation without erasing progress.
+	f.Handle(ActionDown)
+	f.Handle(ActionConfirm)
+	if f.Scene() != SceneNewGameConfirm {
+		t.Fatalf("Scene = %v after New Game, want SceneNewGameConfirm", f.Scene())
+	}
+	if got := f.Progress(); got != before {
+		t.Fatalf("Progress changed on opening confirmation: %+v", got)
+	}
+
+	// The default selection is No; confirming it cancels with progress intact.
+	f.Handle(ActionConfirm)
+	if f.Scene() != SceneMainMenu {
+		t.Fatalf("Scene = %v after cancel, want SceneMainMenu", f.Scene())
+	}
+	if got := f.Progress(); got != before {
+		t.Fatalf("Progress erased on cancel: %+v", got)
+	}
+
+	// Back also cancels without erasing progress.
+	f.Handle(ActionDown)
+	f.Handle(ActionConfirm)
+	if f.Scene() != SceneNewGameConfirm {
+		t.Fatalf("Scene = %v after second New Game, want SceneNewGameConfirm", f.Scene())
+	}
+	f.Handle(ActionBack)
+	if f.Scene() != SceneMainMenu {
+		t.Fatalf("Scene = %v after Back, want SceneMainMenu", f.Scene())
+	}
+	if got := f.Progress(); got != before {
+		t.Fatalf("Progress erased on Back: %+v", got)
+	}
+
+	// Confirming Yes erases progress and opens the story intro.
+	f.Handle(ActionDown)
+	f.Handle(ActionConfirm)
+	if f.Scene() != SceneNewGameConfirm {
+		t.Fatalf("Scene = %v after third New Game, want SceneNewGameConfirm", f.Scene())
+	}
+	f.Handle(ActionUp) // Yes
+	f.Handle(ActionConfirm)
+	if f.Scene() != SceneStory {
+		t.Fatalf("Scene = %v after Yes, want SceneStory", f.Scene())
+	}
+	if f.Story() != StoryIntro {
+		t.Fatalf("Story = %v after Yes, want StoryIntro", f.Story())
+	}
+	if got := f.Progress(); got != NewProgress() {
+		t.Fatalf("Progress = %+v after Yes, want %+v", got, NewProgress())
 	}
 }
 

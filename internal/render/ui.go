@@ -31,12 +31,14 @@ type UI struct {
 	fnt   *font.Font
 	scale int
 
+	// anim is the animation clock in seconds, advanced once per frame in
+	// Draw and shared by every per-frame animation in the render layer.
+	anim float64
+
 	// scene and sceneAt track when the current scene started, so Draw can
-	// overlay a short fade on every scene change. started drives the hero's
-	// run animation and never resets while the UI lives.
+	// overlay a short fade on every scene change.
 	scene   campaign.Scene
 	sceneAt time.Time
-	started time.Time
 
 	// prevTotalCombs, prevBald, prevLivesLost and prevAirborne are the last
 	// run state drawScene observed, so it can spawn captions and particle
@@ -46,6 +48,22 @@ type UI struct {
 	prevLivesLost  int
 	prevAirborne   bool
 	airTracked     bool
+
+	// prevStomps, prevCheckpointZ and prevSliding are the last run state
+	// updateRunOverlays observed, so it can spawn stomp, checkpoint and slide
+	// particles exactly when those events happen.
+	prevStomps      int
+	prevCheckpointZ float64
+	prevSliding     bool
+	// prevBossLives is the last boss lives updateBossOverlays observed, so a
+	// boss hit spawns its particle once.
+	prevBossLives int
+
+	// slideX, slideY and zoom are the scene-change motion applied to the 2D
+	// screens alongside the fade.
+	slideX int
+	slideY int
+	zoom   float64
 
 	// caption and captionAt are the short play caption currently on screen.
 	caption   []ScreenLine
@@ -65,11 +83,18 @@ type burst struct {
 	life   time.Duration
 }
 
+// VolumeBar is the unscaled geometry of one settings volume bar: where it
+// sits, how large it is, and the fraction of it that is filled.
+type VolumeBar struct {
+	X, Y          int
+	Width, Height int
+	Fill          float64
+}
+
 // NewUI returns a UI that draws its text with fnt. The font is read-only and
 // safe to share.
 func NewUI(fnt *font.Font) *UI {
-	now := time.Now()
-	return &UI{fnt: fnt, scale: uiScale, sceneAt: now, started: now}
+	return &UI{fnt: fnt, scale: uiScale, sceneAt: time.Now(), prevBossLives: -1, zoom: 1}
 }
 
 // The screen layout is described in the font's unscaled pixel grid; Draw
@@ -86,6 +111,11 @@ const (
 	uiLogoScale    = 4
 	uiTaglineScale = 2
 
+	// logoBobSpeed and logoBobAmplitude drive the main-menu logo's subtle
+	// vertical bob.
+	logoBobSpeed     = 2.0
+	logoBobAmplitude = 2.0
+
 	// storyWrapChars is the maximum rune count a story or ending line holds
 	// before it wraps to the next line.
 	storyWrapChars = 60
@@ -93,6 +123,19 @@ const (
 	// sceneFadeDuration is how many seconds a scene-change fade takes to
 	// clear.
 	sceneFadeDuration = 0.35
+
+	// sceneTransitionDuration is how long the scene-change slide and zoom
+	// motions take, in seconds. It matches the fade so the three read as one
+	// scene change.
+	sceneTransitionDuration = sceneFadeDuration
+
+	// slideDistance is how far, in unscaled pixels, a new screen slides in
+	// from before settling.
+	slideDistance = 24.0
+
+	// zoomStart is the zoom factor at the very start of a scene change; it
+	// settles back to 1.
+	zoomStart = 1.06
 
 	// captionDuration is how many seconds a play caption stays on screen.
 	captionDuration = 1.6
@@ -105,12 +148,21 @@ const (
 	// burstRise is how many meters a particle burst rises over its life.
 	burstRise = 0.8
 
+	// volumeBarWidth and volumeBarHeight size the settings volume bars in
+	// the unscaled screen grid.
+	volumeBarWidth  = 40
+	volumeBarHeight = 6
+
 	// Copycat trail distance tuning: a base gap grows with the run's speed
 	// and shrinks as Chase closes in, never below copycatMinGap.
 	copycatBaseGap  = 1.2
 	copycatSpeedGap = 0.25
 	copycatChaseGap = 2.5
 	copycatMinGap   = 1.6
+
+	// sprintSpeed is the forward speed, in meters per second, at and above
+	// which the hero switches from the run pose to the sprint pose.
+	sprintSpeed = 12.0
 )
 
 // UI colors, drawn behind and over the screen text.
@@ -119,6 +171,7 @@ var (
 	uiTextColor     = Color{R: 236, G: 232, B: 240, A: 255}
 	uiHighlightText = Color{R: 40, G: 30, B: 20, A: 255}
 	uiHighlightBar  = Color{R: 240, G: 202, B: 112, A: 255}
+	uiBarBack       = Color{R: 60, G: 54, B: 70, A: 255}
 )
 
 // Render-layer labels for the level-end stats and the play captions. They
@@ -144,30 +197,75 @@ const cameraPerspective = 0
 // Draw renders the scene for the flow's current state in a window of w by h
 // pixels. It clears the window, draws the 3D corridor or boss arena while
 // playing or paused, then draws the matching screen text and overlays a fade
-// when the scene just changed.
+// with a short slide and zoom when the scene just changed.
 func (u *UI) Draw(f *campaign.Flow, w, h int) {
 	rl.ClearBackground(rlColor(uiBackground))
+	u.anim += float64(rl.GetFrameTime())
 	u.trackScene(f)
+
+	elapsed := time.Since(u.sceneAt).Seconds()
+	u.slideX, u.slideY = slideOffset(elapsed, sceneTransitionDuration)
+	u.zoom = zoomScale(elapsed, sceneTransitionDuration)
+
 	switch f.Scene() {
 	case campaign.ScenePlay:
 		u.drawScene(f)
+		u.begin2D(w, h)
 		u.drawOverlay(u.caption, w, h, u.captionAt, captionDuration)
 		u.drawOverlay(u.introLines, w, h, u.introAt, levelIntroDuration)
 		u.drawLines(HUDLines(f), w, h, false)
+		u.end2D()
 	case campaign.ScenePause:
 		u.drawScene(f)
+		u.begin2D(w, h)
 		u.drawLines(MenuLines(f), w, h, true)
+		u.end2D()
 	case campaign.SceneStory, campaign.SceneEnding, campaign.SceneCredits:
+		u.begin2D(w, h)
 		u.drawLines(StoryLines(f), w, h, true)
+		u.end2D()
+	case campaign.SceneSettings:
+		lines := MenuLines(f)
+		u.begin2D(w, h)
+		u.drawLines(lines, w, h, true)
+		u.drawVolumeBars(f, lines, w, h)
+		u.end2D()
+	case campaign.SceneMainMenu:
+		lines := MenuLines(f)
+		if len(lines) > 0 {
+			lines[0].Y += logoOffset(u.anim)
+		}
+		u.begin2D(w, h)
+		u.drawLines(lines, w, h, true)
+		u.end2D()
 	default:
+		u.begin2D(w, h)
 		u.drawLines(MenuLines(f), w, h, true)
+		u.end2D()
 	}
 	u.drawFade(w, h)
 }
 
-// trackScene records when the flow changes scene so the fade can restart. A
-// transition into play that is not a pause resume also resets the one-shot
-// play overlays, because that is when a new run or boss fight begins.
+// begin2D starts a 2D camera that centers on the window and applies the
+// scene-change slide and zoom. end2D must match every call.
+func (u *UI) begin2D(w, h int) {
+	cam := rl.Camera2D{
+		Offset: rl.Vector2{X: float32(w)/2 + float32(u.slideX), Y: float32(h)/2 + float32(u.slideY)},
+		Target: rl.Vector2{X: float32(w) / 2, Y: float32(h) / 2},
+		Zoom:   float32(u.zoom),
+	}
+	rl.BeginMode2D(cam)
+}
+
+// end2D ends the 2D camera started by begin2D.
+func (u *UI) end2D() {
+	rl.EndMode2D()
+}
+
+// trackScene records when the flow changes scene so the fade and the slide
+// and zoom motions can restart. A transition into play that is not a pause
+// resume also resets the one-shot play overlays, because that is when a new
+// run or boss fight begins.
 func (u *UI) trackScene(f *campaign.Flow) {
 	if f.Scene() == u.scene {
 		return
@@ -189,10 +287,14 @@ func (u *UI) beginPlay(f *campaign.Flow) {
 	u.captionAt = time.Time{}
 	u.bursts = nil
 	u.airTracked = false
+	u.prevBossLives = -1
 	if r := f.Run(); r != nil {
 		u.prevTotalCombs = r.TotalCombs
 		u.prevBald = r.Bald
 		u.prevLivesLost = r.LivesLost
+		u.prevStomps = r.Stomps
+		u.prevCheckpointZ = r.CheckpointZ
+		u.prevSliding = r.Runner.Sliding()
 		u.prevAirborne = r.Runner.Airborne()
 		u.airTracked = true
 	}
@@ -265,16 +367,60 @@ func fadeAlpha(elapsed, duration float64) float64 {
 	return 1 - elapsed/duration
 }
 
+// transitionKinds lists the scene-change motions Draw applies, so tests can
+// pin that slide and zoom accompany the fade.
+func transitionKinds() []string {
+	return []string{"fade", "slide", "zoom"}
+}
+
+// transitionProgress maps the elapsed seconds of a scene change to a [0, 1]
+// progress with the same linear shape as the fade.
+func transitionProgress(elapsed, duration float64) float64 {
+	if duration <= 0 {
+		return 1
+	}
+	if elapsed <= 0 {
+		return 0
+	}
+	if elapsed >= duration {
+		return 1
+	}
+	return elapsed / duration
+}
+
+// slideOffset returns the screen-space slide at elapsed seconds into a scene
+// change. The new screen enters from the right and settles at the origin.
+func slideOffset(elapsed, duration float64) (int, int) {
+	p := transitionProgress(elapsed, duration)
+	return int(math.Round(slideDistance * (1 - p))), 0
+}
+
+// zoomScale returns the scale at elapsed seconds into a scene change: it
+// starts slightly zoomed in and settles to 1.
+func zoomScale(elapsed, duration float64) float64 {
+	p := transitionProgress(elapsed, duration)
+	return zoomStart + (1-zoomStart)*p
+}
+
+// logoOffset returns the subtle vertical offset, in unscaled pixels, of the
+// main-menu logo at animation clock seconds: a gentle sine bob. It is pure so
+// tests can pin the motion.
+func logoOffset(clock float64) int {
+	return int(math.Round(math.Sin(clock*logoBobSpeed) * logoBobAmplitude))
+}
+
 // MenuLines returns the plain text of the current menu screen: the language
-// pick, main menu, map, settings, pause, level end or game over. It picks
-// every string by the flow's language setting and marks the flow's current
-// menu selection. It returns nil for scenes without a menu.
+// pick, main menu, New Game confirmation, map, settings, pause, level end or
+// game over. It picks every string by the flow's language setting and marks
+// the flow's current menu selection. It returns nil for scenes without a menu.
 func MenuLines(f *campaign.Flow) []ScreenLine {
 	switch f.Scene() {
 	case campaign.SceneLanguagePick:
 		return languagePickLines(f)
 	case campaign.SceneMainMenu:
 		return mainMenuLines(f)
+	case campaign.SceneNewGameConfirm:
+		return newGameConfirmLines(f)
 	case campaign.SceneMap:
 		return mapLines(f)
 	case campaign.SceneSettings:
@@ -347,7 +493,7 @@ func languagePickLines(f *campaign.Flow) []ScreenLine {
 
 func mainMenuLines(f *campaign.Flow) []ScreenLine {
 	logoY := uiMarginY
-	taglineY := logoY + uiLineGap*uiLogoScale
+	taglineY := logoY + uiLineGap*uiLogoScale + 2*logoBobAmplitude
 	menuY := taglineY + uiLineGap*uiTaglineScale + uiLineGap
 	lines := []ScreenLine{
 		uiLineScaled(textFor(f, campaign.GameTitle), uiMarginX, logoY, false, uiLogoScale),
@@ -355,6 +501,14 @@ func mainMenuLines(f *campaign.Flow) []ScreenLine {
 	}
 	for i, item := range campaign.MainMenuItems {
 		lines = append(lines, uiLine(textFor(f, item), uiMarginX+uiIndent, menuY+i*uiLineGap, i == f.MenuIndex()))
+	}
+	return lines
+}
+
+func newGameConfirmLines(f *campaign.Flow) []ScreenLine {
+	lines := []ScreenLine{uiLine(textFor(f, campaign.NewGameConfirmTitle), uiMarginX, uiMarginY, false)}
+	for i, item := range campaign.NewGameConfirmItems {
+		lines = append(lines, uiLine(textFor(f, item), uiMarginX+uiIndent, uiMarginY+(i+1)*uiLineGap, i == f.MenuIndex()))
 	}
 	return lines
 }
@@ -380,17 +534,26 @@ func settingsLines(f *campaign.Flow) []ScreenLine {
 		languageValueName(s.Language),
 	}
 	lines := []ScreenLine{uiLine(textFor(f, campaign.SettingsTitle), uiMarginX, uiMarginY, false)}
+	y := uiMarginY
 	for i, label := range campaign.SettingsItems {
-		lines = append(lines, uiLine(fmt.Sprintf("%s: %s", textFor(f, label), values[i]), uiMarginX+uiIndent, uiMarginY+(i+1)*uiLineGap, i == f.MenuIndex()))
+		y += uiLineGap
+		lines = append(lines, uiLine(fmt.Sprintf("%s: %s", textFor(f, label), values[i]), uiMarginX+uiIndent, y, i == f.MenuIndex()))
+		if i < 2 {
+			y += uiLineGap // the volume rows reserve a line for their bar
+		}
 	}
 	return lines
 }
 
 func pauseLines(f *campaign.Flow) []ScreenLine {
-	return []ScreenLine{
+	lines := []ScreenLine{
 		uiLine(textFor(f, campaign.PauseTitle), uiMarginX, uiMarginY, false),
 		uiLine(textFor(f, campaign.PauseHint), uiMarginX+uiIndent, uiMarginY+uiLineGap, false),
 	}
+	for i, item := range campaign.PauseItems {
+		lines = append(lines, uiLine(textFor(f, item), uiMarginX+uiIndent, uiMarginY+(i+2)*uiLineGap, i == f.MenuIndex()))
+	}
+	return lines
 }
 
 func levelEndLines(f *campaign.Flow) []ScreenLine {
@@ -523,7 +686,26 @@ func languageValueName(l campaign.Language) string {
 }
 
 func volumeText(v float64) string {
-	return fmt.Sprintf("%d", int(math.Round(v*10)))
+	return fmt.Sprintf("%d%%", int(math.Round(v*100)))
+}
+
+// volumeBar returns the unscaled geometry of a settings volume bar on the row
+// whose text sits at y, filled to fraction of its width. It is pure so tests
+// can pin the layout.
+func volumeBar(y int, fraction float64) VolumeBar {
+	if fraction < 0 {
+		fraction = 0
+	}
+	if fraction > 1 {
+		fraction = 1
+	}
+	return VolumeBar{
+		X:      uiMarginX + uiIndent,
+		Y:      y + uiLineGap,
+		Width:  volumeBarWidth,
+		Height: volumeBarHeight,
+		Fill:   fraction,
+	}
 }
 
 func chaseTenths(chase float64) int {
@@ -562,25 +744,25 @@ func storyWrap(text string, x, y, gap int) []ScreenLine {
 
 // drawScene draws the 3D scene behind play and pause: the generated corridor
 // with the hero and Copycat, or the boss arena with the hero and Copycat's
-// boss form. The hero is animated by the seconds elapsed since the UI was
-// created. During a run it also detects comb, snip and landing events and
-// draws the matching particle bursts.
+// boss form. The hero, Copycat and the boss are animated by the UI's
+// per-frame animation clock. During a run it also detects comb, snip, stomp,
+// checkpoint and slide events and draws the matching particle bursts.
 func (u *UI) drawScene(f *campaign.Flow) {
 	cam := u.cameraFor(f)
 	rl.BeginMode3D(cam)
 	defer rl.EndMode3D()
 
-	t := time.Since(u.started).Seconds()
+	t := u.anim
 
 	if b := f.Boss(); b != nil {
 		DrawCmds(BuildBossArena(Cam{Lane: float64(b.HeroLane()), Z: 0, Height: 0}))
-		if !b.Vulnerable() {
-			DrawCmds(BuildArenaTelegraph(b.AttackLane(), b.AttackKind()))
-		}
+		DrawCmds(BuildBossTelegraph(b))
 		heroPos := Vec3{X: f32(laneX(float64(b.HeroLane()))), Y: 0, Z: 0}
 		u.drawModelAt(BuildHeroAt(BossPose(b.Jumping(), b.Sliding()), false, t), heroPos)
 		bossPos := Vec3{X: f32(laneX(float64(b.AttackLane()))), Y: 0, Z: 8}
-		u.drawModelAt(BuildBoss(b.Phase(), b.Vulnerable()), bossPos)
+		u.drawModelAt(BuildBossAt(b.Phase(), b.Vulnerable(), bossStanceFor(b), t), bossPos)
+		u.updateBossOverlays(b, heroPos)
+		u.drawBursts()
 		return
 	}
 
@@ -590,11 +772,13 @@ func (u *UI) drawScene(f *campaign.Flow) {
 	}
 	theme := runTheme(f)
 	cam3 := Cam{Lane: r.Runner.Lane(), Z: r.Runner.Z(), Height: r.Runner.Height()}
-	DrawCmds(ApplyFog(BuildWorld(r.Level, theme, cam3), cam3, Palette(theme)))
+	DrawCmds(ApplyFog(BuildWorldAt(r.Level, theme, cam3, t), cam3, Palette(theme)))
 	pos := Vec3{X: f32(laneX(r.Runner.Lane())), Y: f32(r.Runner.Height()), Z: f32(r.Runner.Z())}
-	u.drawModelAt(BuildHeroAt(heroPoseFor(r), r.Bald, t), pos)
+	landing := u.prevAirborne && !r.Runner.Airborne()
+	pose := heroPoseFor(r.Runner.Slamming(), r.Runner.Sliding(), r.Runner.Airborne(), landing, r.Runner.Speed())
+	u.drawModelAt(BuildHeroAt(pose, r.Bald, t), pos)
 	chase := CopycatDistance(r.Runner.Speed(), r.Chase)
-	u.drawModelAt(BuildCopycat(chase), Vec3{X: pos.X, Y: 0, Z: pos.Z})
+	u.drawModelAt(BuildCopycatAt(chase, CopycatPoseWindup, t), Vec3{X: pos.X, Y: 0, Z: pos.Z})
 
 	u.updateRunOverlays(f, r, pos)
 	u.drawBursts()
@@ -673,8 +857,36 @@ func BossPose(jumping, sliding bool) HeroPose {
 	return PoseRun
 }
 
-func heroPoseFor(r *gameplay.Run) HeroPose {
-	return RunnerPose(r.Runner.Slamming(), r.Runner.Sliding(), r.Runner.Airborne())
+// heroPoseFor maps the runner's movement state to the hero pose the model
+// draws. It is pure so tests can cover every move without constructing a run.
+func heroPoseFor(slamming, sliding, airborne, landing bool, speed float64) HeroPose {
+	switch {
+	case slamming:
+		return PoseStomp
+	case sliding:
+		return PoseSlide
+	case airborne:
+		return PoseJump
+	case landing:
+		return PoseLanding
+	case speed >= sprintSpeed:
+		return PoseSprint
+	default:
+		return PoseRun
+	}
+}
+
+// bossStanceFor maps the boss fight state to the stance BuildBossAt draws:
+// idle during the vulnerable crouch, a jump/rear for a high swipe and an
+// attack wind-up for a low swipe.
+func bossStanceFor(b *gameplay.BossFight) BossStance {
+	if b.Vulnerable() {
+		return BossStanceIdle
+	}
+	if b.AttackKind() == gameplay.AttackHigh {
+		return BossStanceJump
+	}
+	return BossStanceWindup
 }
 
 // CopycatDistance returns how far behind the hero Copycat trails: a base gap
@@ -688,13 +900,28 @@ func CopycatDistance(speed, chase float64) float64 {
 	return gap
 }
 
-// updateRunOverlays tracks the run counters and the hero's airborne state,
-// spawning the matching caption and particle burst on comb pickups, snips and
-// landings.
+// updateBossOverlays tracks the boss's lives and spawns the boss-hit burst
+// exactly when an attack lands and costs a life.
+func (u *UI) updateBossOverlays(b *gameplay.BossFight, pos Vec3) {
+	if u.prevBossLives < 0 {
+		u.prevBossLives = b.Lives()
+		return
+	}
+	if b.Lives() < u.prevBossLives {
+		u.spawnBurst(BuildBossHitBurst(), pos)
+	}
+	u.prevBossLives = b.Lives()
+}
+
+// updateRunOverlays tracks the run counters and the hero's airborne, sliding
+// and checkpoint state, spawning the matching caption and particle burst on
+// comb pickups, snips, landings, stomps, checkpoints and slides.
 func (u *UI) updateRunOverlays(f *campaign.Flow, r *gameplay.Run, pos Vec3) {
 	air := r.Runner.Airborne()
+	sliding := r.Runner.Sliding()
 	if !u.airTracked {
 		u.prevAirborne = air
+		u.prevSliding = sliding
 		u.airTracked = true
 	}
 
@@ -710,11 +937,23 @@ func (u *UI) updateRunOverlays(f *campaign.Flow, r *gameplay.Run, pos Vec3) {
 		u.showCaption(LandingCaption(f))
 		u.spawnBurst(BuildLandingBurst(), pos)
 	}
+	if r.Stomps > u.prevStomps {
+		u.spawnBurst(BuildStompBurst(), pos)
+	}
+	if r.CheckpointZ != u.prevCheckpointZ {
+		u.spawnBurst(BuildCheckpointShine(), pos)
+	}
+	if sliding && !u.prevSliding {
+		u.spawnBurst(BuildSlideSparks(), pos)
+	}
 
 	u.prevTotalCombs = r.TotalCombs
 	u.prevBald = r.Bald
 	u.prevLivesLost = r.LivesLost
 	u.prevAirborne = air
+	u.prevSliding = sliding
+	u.prevStomps = r.Stomps
+	u.prevCheckpointZ = r.CheckpointZ
 }
 
 func (u *UI) showCaption(lines []ScreenLine) {
@@ -764,19 +1003,58 @@ func (u *UI) drawLines(lines []ScreenLine, w, h int, center bool) {
 	if scale < 1 {
 		scale = 1
 	}
-	ox, oy := 0, 0
-	if center {
-		ox = (w - u.blockWidth(lines)*scale) / 2
-		oy = (h - u.blockHeight(lines)*scale) / 2
-		if ox < 0 {
-			ox = 0
-		}
-		if oy < 0 {
-			oy = 0
-		}
-	}
+	ox, oy := u.centeredOrigin(lines, w, h, center)
 	for _, l := range lines {
 		u.drawLine(l, ox+l.X*scale, oy+l.Y*scale)
+	}
+}
+
+// centeredOrigin returns the window offset that centers the lines block, or
+// the zero offset when center is false or there are no lines.
+func (u *UI) centeredOrigin(lines []ScreenLine, w, h int, center bool) (int, int) {
+	if !center || len(lines) == 0 {
+		return 0, 0
+	}
+	scale := u.scale
+	if scale < 1 {
+		scale = 1
+	}
+	ox := (w - u.blockWidth(lines)*scale) / 2
+	oy := (h - u.blockHeight(lines)*scale) / 2
+	if ox < 0 {
+		ox = 0
+	}
+	if oy < 0 {
+		oy = 0
+	}
+	return ox, oy
+}
+
+// drawVolumeBars draws the filled settings volume bars aligned with the
+// centered settings block.
+func (u *UI) drawVolumeBars(f *campaign.Flow, lines []ScreenLine, w, h int) {
+	if len(lines) < 3 {
+		return
+	}
+	s := f.Settings()
+	scale := u.scale
+	if scale < 1 {
+		scale = 1
+	}
+	ox, oy := u.centeredOrigin(lines, w, h, true)
+	bars := []VolumeBar{
+		volumeBar(lines[1].Y, s.MusicVolume),
+		volumeBar(lines[2].Y, s.SoundVolume),
+	}
+	for _, b := range bars {
+		x := ox + b.X*scale
+		y := oy + b.Y*scale
+		bw := b.Width * scale
+		bh := b.Height * scale
+		rl.DrawRectangle(int32(x), int32(y), int32(bw), int32(bh), rlColor(uiBarBack))
+		if b.Fill > 0 {
+			rl.DrawRectangle(int32(x), int32(y), int32(float64(bw)*b.Fill), int32(bh), rlColor(uiHighlightBar))
+		}
 	}
 }
 
