@@ -273,6 +273,32 @@ func TestBossSameInputScriptGivesIdenticalStates(t *testing.T) {
 	}
 }
 
+func TestBossSlidingGetter(t *testing.T) {
+	b := gameplay.NewBossFight(3)
+
+	// Announce the opening attack on the first step.
+	if outs := b.Step(runner.Input{}, bossDT); !hasOutcome(outs, gameplay.BossTelegraph) {
+		t.Fatalf("first step did not announce an attack: %v", outs)
+	}
+	if b.Sliding() {
+		t.Fatalf("Sliding() = true before a slide, want false")
+	}
+
+	// A grounded slide starts on the edge of a Slide press.
+	b.Step(runner.Input{Slide: true}, bossDT)
+	if !b.Sliding() {
+		t.Fatalf("Sliding() = false right after starting a slide, want true")
+	}
+
+	// The slide ends after its duration without further input.
+	for i := 0; i < bossWaitSteps && b.Sliding(); i++ {
+		b.Step(runner.Input{}, bossDT)
+	}
+	if b.Sliding() {
+		t.Fatalf("Sliding() = true after the slide duration, want false")
+	}
+}
+
 type bossSnapshot struct {
 	State      gameplay.BossState
 	Phase      int

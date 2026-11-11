@@ -1,5 +1,9 @@
 package render
 
+import (
+	"copycat/internal/gameplay"
+)
+
 // Salon arena geometry, in meters. The boss fight owns a three-lane arena on
 // the same x offsets as the corridor, so the hero and Copycat land on the
 // lanes the simulation already uses.
@@ -17,6 +21,12 @@ var (
 	bossLight  = Color{R: 232, G: 224, B: 236, A: 255}
 	bossChair  = Color{R: 200, G: 40, B: 90, A: 255}
 	bossMirror = Color{R: 150, G: 180, B: 200, A: 255}
+
+	// The boss telegraph paints the attack lane so the player can read which
+	// dodge the next attack needs: orange to jump a low swipe, red to slide a
+	// high swipe.
+	bossTelegraphLow  = Color{R: 250, G: 170, B: 60, A: 220}
+	bossTelegraphHigh = Color{R: 235, G: 60, B: 60, A: 220}
 )
 
 // BuildBossArena returns the draw list for the Last Haircut salon: a
@@ -51,6 +61,38 @@ func BuildBossArena(cam Cam) []Cmd {
 		cs = append(cs, standingMirrorCmds(x, 9)...)
 	}
 	return cs
+}
+
+// BuildArenaTelegraph returns the draw list highlighting the attack lane
+// during Copycat's telegraphed attack. lane is the lane index in [0, 2];
+// kind picks the dodge-specific highlight color.
+func BuildArenaTelegraph(lane int, kind gameplay.AttackKind) []Cmd {
+	if lane < 0 {
+		lane = 0
+	}
+	if lane > 2 {
+		lane = 2
+	}
+	col := bossTelegraphLow
+	if kind == gameplay.AttackHigh {
+		col = bossTelegraphHigh
+	}
+	return []Cmd{{
+		Shape: ShapePlane,
+		Pos:   v3(laneX(float64(lane)), 0.02, (arenaNearZ+arenaFarZ)/2),
+		Size:  Size{X: arenaTileSize, Z: arenaFarZ - arenaNearZ},
+		Color: col,
+	}}
+}
+
+// BuildBossTelegraph returns the draw list highlighting the lane Copycat has
+// currently announced for attack. It draws nothing during a vulnerable
+// window, when Copycat crouches instead of telegraphing a swipe.
+func BuildBossTelegraph(b *gameplay.BossFight) []Cmd {
+	if b == nil || b.Vulnerable() {
+		return nil
+	}
+	return BuildArenaTelegraph(b.AttackLane(), b.AttackKind())
 }
 
 func barberChairCmds(x, z float64) []Cmd {

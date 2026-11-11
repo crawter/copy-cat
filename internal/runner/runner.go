@@ -188,6 +188,16 @@ func (r *Runner) OnContainer() bool { return r.onContainer }
 // Speed returns the current forward speed, in meters per second.
 func (r *Runner) Speed() float64 { return r.speed }
 
+// Airborne reports whether the hero is off the ground: jumping, slamming or
+// falling.
+func (r *Runner) Airborne() bool { return r.air }
+
+// Sliding reports whether the hero is low in a grounded slide.
+func (r *Runner) Sliding() bool { return r.sliding }
+
+// Slamming reports whether the hero is slamming downward from the air.
+func (r *Runner) Slamming() bool { return r.slamming }
+
 // Restart resets the runner so a run resumes cleanly from startZ: lane back
 // to center, height and vertical motion to zero, speed to the base speed, all
 // timers cleared, forward motion un-stopped and Z moved to startZ. It is the

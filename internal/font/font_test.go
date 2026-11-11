@@ -14,7 +14,7 @@ import (
 func everyLine() []any {
 	return []any{
 		// internal/campaign.
-		campaign.GameTitle, campaign.MainMenuItems, campaign.MapTitle, campaign.MapLocked,
+		campaign.GameTitle, campaign.TitleTagline, campaign.MainMenuItems, campaign.MapTitle, campaign.MapLocked,
 		campaign.LevelNames, campaign.SettingsTitle, campaign.SettingsItems,
 		campaign.LanguagePickTitle, campaign.LanguageEnglishName, campaign.LanguageUkrainianName,
 		campaign.PauseTitle, campaign.PauseHint, campaign.LevelEndTitle, campaign.LevelEndHint,

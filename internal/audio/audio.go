@@ -21,10 +21,12 @@ const (
 	TrackNeon
 	// TrackBoss is the tense, faster looping theme for the boss fight.
 	TrackBoss
+	// TrackEnding is the gentle theme played on the ending and credits scenes.
+	TrackEnding
 )
 
 // trackCount is the number of tracks and bounds the mixer's loop caches.
-const trackCount = int(TrackBoss) + 1
+const trackCount = int(TrackEnding) + 1
 
 // Sound identifies one one-shot sound effect.
 type Sound int
@@ -47,6 +49,28 @@ const (
 	SoundSnip
 	// SoundCheckpoint is the chime played when a checkpoint is reached.
 	SoundCheckpoint
+	// SoundStomp is the low crush played when the hero stomps an enemy.
+	SoundStomp
+	// SoundFall is the descending whoosh and thud played when the hero falls
+	// into a pit.
+	SoundFall
+	// SoundFanfare is the victory fanfare played when a run is finished.
+	SoundFanfare
+	// SoundGameOver is the descending phrase played when the hero dies.
+	SoundGameOver
+	// SoundMenuMove is the short blip played when a menu selection moves.
+	SoundMenuMove
+	// SoundMenuSelect is the chime played when a menu selection is confirmed.
+	SoundMenuSelect
+	// SoundExtraLife is the rising arpeggio played when an extra life is won.
+	SoundExtraLife
+	// SoundBossHit is the impact played when the boss hits the hero.
+	SoundBossHit
+	// SoundHonk is the honk played when the hero falls into a pit.
+	SoundHonk
+	// SoundMeow is the meow played when Copycat snips hair or the boss phase
+	// rises.
+	SoundMeow
 )
 
 const (
@@ -115,8 +139,8 @@ func (m *Mixer) PlayMusic(t Track) {
 	if t < TrackMenu {
 		t = TrackMenu
 	}
-	if t > TrackBoss {
-		t = TrackBoss
+	if t > TrackEnding {
+		t = TrackEnding
 	}
 	m.musicTrack = t
 	m.musicStart = m.clock
@@ -138,8 +162,8 @@ func (m *Mixer) Play(s Sound) {
 	if s < SoundJump {
 		s = SoundJump
 	}
-	if s > SoundCheckpoint {
-		s = SoundCheckpoint
+	if s > SoundMeow {
+		s = SoundMeow
 	}
 	if len(m.effects) == maxActiveSounds {
 		copy(m.effects, m.effects[1:])

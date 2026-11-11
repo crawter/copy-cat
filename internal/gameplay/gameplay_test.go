@@ -726,6 +726,85 @@ func TestPickupOnOtherLaneStaysUntouched(t *testing.T) {
 	}
 }
 
+func TestTotalCombsIncrementsOnComb(t *testing.T) {
+	p := pickupParams(levelgen.Comb)
+	l := findLevelUpTo(t, p, func(l *levelgen.Level) bool {
+		comb, ok := firstLaneOnePickup(l, levelgen.Comb)
+		return ok && clearRunUp(l, comb.Z, 1)
+	}, 20000)
+	comb, _ := firstLaneOnePickup(l, levelgen.Comb)
+
+	cfg := runner.DefaultConfig()
+	cfg.BaseSpeed = p.BaseSpeed
+	r := gameplay.NewRun(runner.New(l, cfg), l, 3)
+	r.Runner.Restart(comb.Z)
+
+	if !runUntilOutcome(t, r, gameplay.OutcomeComb, 60) {
+		t.Fatalf("never collected comb %+v", comb)
+	}
+	if r.TotalCombs != 1 {
+		t.Fatalf("TotalCombs = %d after collecting a comb, want 1", r.TotalCombs)
+	}
+}
+
+func TestLivesLostIncrementsOnPit(t *testing.T) {
+	p := levelgen.Mangroves()
+	cfg := runner.DefaultConfig()
+	cfg.BaseSpeed = p.BaseSpeed
+
+	l := findLevel(t, p, func(l *levelgen.Level) bool {
+		e, ok := firstForced(l)
+		return ok && e.Kind == levelgen.Pit
+	})
+	pit, _ := firstForced(l)
+
+	r := gameplay.NewRun(runner.New(l, cfg), l, 3)
+	r.CheckpointZ = pit.Z - 4
+	r.Runner.Restart(r.CheckpointZ)
+
+	if !runUntilOutcome(t, r, gameplay.OutcomePit, 400) {
+		t.Fatalf("never fell in pit %+v", pit)
+	}
+	if r.LivesLost != 1 {
+		t.Fatalf("LivesLost = %d after a pit, want 1", r.LivesLost)
+	}
+	if r.Lives != 2 {
+		t.Fatalf("Lives = %d after a pit, want 2", r.Lives)
+	}
+}
+
+func TestStompsIncrementsOnStomp(t *testing.T) {
+	p := levelgen.Mangroves()
+	cfg := runner.DefaultConfig()
+	cfg.BaseSpeed = p.BaseSpeed
+
+	l := findLevel(t, p, func(l *levelgen.Level) bool {
+		e, ok := firstForced(l)
+		return ok && e.Kind == levelgen.Enemy && e.Lane == 1
+	})
+	enemy, _ := firstForced(l)
+
+	r := gameplay.NewRun(runner.New(l, cfg), l, 3)
+	stomped := false
+	for i := 0; i < 4000 && r.State == gameplay.StateRunning && !stomped; i++ {
+		var in runner.Input
+		if r.Runner.Z() >= enemy.Z-cfg.BaseSpeed*0.32 && r.Runner.Z() < enemy.Z {
+			in.Jump = true
+		}
+		for _, o := range r.Step(in, stepDT) {
+			if o == gameplay.OutcomeStomp {
+				stomped = true
+			}
+		}
+	}
+	if !stomped {
+		t.Fatalf("never stomped enemy %+v", enemy)
+	}
+	if r.Stomps != 1 {
+		t.Fatalf("Stomps = %d after stomping enemy %+v, want 1", r.Stomps, enemy)
+	}
+}
+
 func findLevel(t *testing.T, p levelgen.Params, match func(*levelgen.Level) bool) *levelgen.Level {
 	t.Helper()
 	for seed := uint64(0); seed < 2000; seed++ {

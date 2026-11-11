@@ -68,6 +68,13 @@ type Run struct {
 	// Combs is how many combs the run has collected toward the next extra
 	// life. Every 100 combs grant one life, keeping the remainder.
 	Combs int
+	// TotalCombs is how many combs the run has collected over the whole
+	// attempt, including combs spent on extra lives.
+	TotalCombs int
+	// LivesLost is how many lives the run has lost over the whole attempt.
+	LivesLost int
+	// Stomps is how many enemies the run has stomped over the whole attempt.
+	Stomps int
 	// ShieldHits is how many snips a hairspray shield still absorbs.
 	ShieldHits int
 	// Chase is how close Copycat is, from 0 (far) to 1 (close). A stumble
@@ -103,6 +110,9 @@ func NewRun(r *runner.Runner, level *levelgen.Level, lives int) *Run {
 		Runner:      r,
 		Level:       level,
 		Lives:       lives,
+		TotalCombs:  0,
+		LivesLost:   0,
+		Stomps:      0,
 		CheckpointZ: 0,
 		State:       StateRunning,
 		pickups:     pickupsOf(level),
@@ -143,6 +153,7 @@ func (r *Run) Step(in runner.Input, dt float64) []Outcome {
 		case runner.EventFellInPit:
 			out = append(out, r.fellInPit()...)
 		case runner.EventStomp:
+			r.Stomps++
 			out = append(out, OutcomeStomp)
 		}
 	}
@@ -175,6 +186,7 @@ func (r *Run) collectPickups() []Outcome {
 		switch e.Kind {
 		case levelgen.Comb:
 			r.Combs++
+			r.TotalCombs++
 			out = append(out, OutcomeComb)
 			if r.Combs >= combsPerLife {
 				r.Combs -= combsPerLife
@@ -248,6 +260,7 @@ func (r *Run) fellInPit() []Outcome {
 func (r *Run) loseLife() {
 	if r.Lives > 0 {
 		r.Lives--
+		r.LivesLost++
 	}
 }
 
