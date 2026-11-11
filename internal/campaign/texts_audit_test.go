@@ -130,6 +130,8 @@ func TestTextsAuditAcrossPackages(t *testing.T) {
 			values: []any{
 				GameTitle,
 				MainMenuItems,
+				NewGameConfirmTitle,
+				NewGameConfirmItems,
 				MapTitle,
 				MapLocked,
 				LevelNames,
@@ -140,6 +142,7 @@ func TestTextsAuditAcrossPackages(t *testing.T) {
 				LanguageUkrainianName,
 				PauseTitle,
 				PauseHint,
+				PauseItems,
 				LevelEndTitle,
 				LevelEndHint,
 				EndlessLevelEndTitle,

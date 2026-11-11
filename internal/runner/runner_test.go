@@ -448,6 +448,123 @@ func TestRampTransitionsRaiseAndLower(t *testing.T) {
 	}
 }
 
+func TestRestartResetsLaneHeightSpeedStopAndZ(t *testing.T) {
+	p := levelgen.Mangroves()
+	cfg := runner.DefaultConfig()
+	cfg.BaseSpeed = p.BaseSpeed
+
+	l := findLevel(t, p, func(l *levelgen.Level) bool {
+		e, ok := firstForced(l)
+		if !ok || (e.Kind != levelgen.LowBarrier && e.Kind != levelgen.HighBarrier) || e.Lane != 1 {
+			return false
+		}
+		if e.Z < 12 {
+			return false
+		}
+		return clearForced(l, e.Z+barrierDepth, e.Z+barrierDepth+30)
+	})
+	bar, _ := firstForced(l)
+
+	r := runner.New(l, cfg)
+	dt := 1.0 / 60.0
+
+	// Move to lane 2 so the lane-1 barrier is left behind for the jump.
+	for i := 0; i < 4000 && r.Lane() < 2; i++ {
+		r.Step(runner.Input{Right: true}, dt)
+	}
+	if r.Lane() != 2 {
+		t.Fatalf("Lane() = %v after moving right, want 2", r.Lane())
+	}
+
+	jumped := false
+	for _, ev := range r.Step(runner.Input{Jump: true}, dt) {
+		if ev == runner.EventJump {
+			jumped = true
+		}
+	}
+	if !jumped {
+		t.Fatalf("jump was not reported")
+	}
+	for i := 0; i < 4000 && r.Height() > 0; i++ {
+		r.Step(runner.Input{}, dt)
+	}
+	if r.Height() != 0 {
+		t.Fatalf("Height() = %v after landing, want 0", r.Height())
+	}
+
+	// Return to lane 1 and run into the barrier to stop forward motion.
+	for i := 0; i < 4000 && r.Lane() > 1; i++ {
+		r.Step(runner.Input{Left: true}, dt)
+	}
+	if r.Lane() != 1 {
+		t.Fatalf("Lane() = %v after moving left, want 1", r.Lane())
+	}
+
+	hit := false
+	var hitZ float64
+	for i := 0; i < 4000; i++ {
+		for _, ev := range r.Step(runner.Input{}, dt) {
+			if ev == runner.EventHitBarrier {
+				hit = true
+				hitZ = r.Z()
+			}
+		}
+		if hit {
+			break
+		}
+	}
+	if !hit {
+		t.Fatalf("never hit lane-1 barrier %+v", bar)
+	}
+	if r.Speed() != 0 {
+		t.Fatalf("Speed() = %v after hitting barrier, want 0", r.Speed())
+	}
+	for i := 0; i < 3; i++ {
+		r.Step(runner.Input{}, dt)
+	}
+	if r.Z() != hitZ {
+		t.Fatalf("Z moved after stop: %v -> %v", hitZ, r.Z())
+	}
+
+	startZ := bar.Z + barrierDepth + 0.1
+	r.Restart(startZ)
+	if r.Lane() != 1 {
+		t.Fatalf("Lane() = %v after Restart, want 1", r.Lane())
+	}
+	if r.Height() != 0 {
+		t.Fatalf("Height() = %v after Restart, want 0", r.Height())
+	}
+	if r.Speed() != cfg.BaseSpeed {
+		t.Fatalf("Speed() = %v after Restart, want %v", r.Speed(), cfg.BaseSpeed)
+	}
+	if r.Z() != startZ {
+		t.Fatalf("Z() = %v after Restart, want %v", r.Z(), startZ)
+	}
+
+	before := r.Z()
+	events := r.Step(runner.Input{}, dt)
+	if r.Z() <= before {
+		t.Fatalf("Z did not advance after Restart: %v -> %v", before, r.Z())
+	}
+	if r.Speed() <= 0 {
+		t.Fatalf("Speed() = %v after Restart step, want positive", r.Speed())
+	}
+	for _, ev := range events {
+		if ev == runner.EventHitBarrier {
+			t.Fatalf("hit barrier right after Restart at z %v", r.Z())
+		}
+	}
+
+	for i := 0; i < 60; i++ {
+		for _, ev := range r.Step(runner.Input{}, dt) {
+			switch ev {
+			case runner.EventHitBarrier, runner.EventHitEnemy, runner.EventFellInPit:
+				t.Fatalf("hit event %v within 60 frames of Restart at z %v", ev, r.Z())
+			}
+		}
+	}
+}
+
 type stepScript struct {
 	in runner.Input
 	dt float64
@@ -580,6 +697,31 @@ func firstForced(l *levelgen.Level) (levelgen.Element, bool) {
 		}
 	}
 	return levelgen.Element{}, false
+}
+
+// forcedSpan returns the half-open [start, end) z interval a forced element
+// occupies, matching the runner's own spanOf contract.
+func forcedSpan(e levelgen.Element) (float64, float64) {
+	switch e.Kind {
+	case levelgen.Pit:
+		return e.Z, e.Z + e.Span
+	case levelgen.LowBarrier, levelgen.HighBarrier, levelgen.Enemy:
+		return e.Z, e.Z + barrierDepth
+	default:
+		return e.Z, e.Z
+	}
+}
+
+// clearForced reports whether no forced element (pit, barrier or enemy)
+// overlaps the half-open z interval [from, to).
+func clearForced(l *levelgen.Level, from, to float64) bool {
+	for _, e := range forcedOf(l) {
+		start, end := forcedSpan(e)
+		if start < to && end > from {
+			return false
+		}
+	}
+	return true
 }
 
 func firstRampOnLane(l *levelgen.Level, lane int) (levelgen.Element, bool) {

@@ -24,7 +24,7 @@ import (
 const (
 	windowWidth  = 1280 // window width, in pixels
 	windowHeight = 720  // window height, in pixels
-	windowTitle  = "copycat"
+	windowTitle  = "Hair Raid"
 	targetFPS    = 60 // fixed update and draw rate
 
 	sampleRate         = 44100 // mixer and stream sample rate, in hertz
@@ -64,6 +64,7 @@ func run() error {
 	mapper := input.NewMapper()
 
 	rl.InitWindow(windowWidth, windowHeight, windowTitle)
+	rl.SetExitKey(0)
 	defer rl.CloseWindow()
 	rl.SetTargetFPS(targetFPS)
 	if file.Settings.Fullscreen && !rl.IsWindowFullscreen() {
@@ -86,6 +87,7 @@ func run() error {
 		currentTrack = audio.Track(-1) // forces the first track selection below
 		lastProgress = file.Progress
 		lastSettings = file.Settings
+		prevSettings = file.Settings
 	)
 	buf := make([]float32, streamBufferFrames*streamChannels)
 
@@ -95,7 +97,7 @@ func run() error {
 		st := input.Poll(mapper)
 		dt := float64(rl.GetFrameTime())
 
-		applyActions(flow, st, prevState)
+		applyActions(flow, mixer, st, prevState)
 
 		if flow.Quit() || st.Quit {
 			break
@@ -105,7 +107,7 @@ func run() error {
 
 		prevState = st
 
-		applySettings(mixer, flow, &prevFullscreen)
+		applySettings(mixer, flow, &prevSettings, &prevFullscreen)
 		playTrack(mixer, &currentTrack, trackForScene(flow))
 		saveIfChanged(path, flow, &lastProgress, &lastSettings)
 		feedStream(stream, mixer, buf)
@@ -123,21 +125,39 @@ func run() error {
 
 // applyActions turns the frame's pressed edges into flow actions. Left and
 // right are held in the input state, so their menu edges are derived here.
-func applyActions(f *campaign.Flow, st, prev input.State) {
+// In a selectable menu the directional edges play the move blip and confirm
+// plays the select chime.
+func applyActions(f *campaign.Flow, mixer *audio.Mixer, st, prev input.State) {
+	menu := isMenuScene(f)
 	if st.Up {
 		f.Handle(campaign.ActionUp)
+		if menu {
+			mixer.Play(audio.SoundMenuMove)
+		}
 	}
 	if st.Down {
 		f.Handle(campaign.ActionDown)
+		if menu {
+			mixer.Play(audio.SoundMenuMove)
+		}
 	}
 	if st.Left && !prev.Left {
 		f.Handle(campaign.ActionLeft)
+		if menu {
+			mixer.Play(audio.SoundMenuMove)
+		}
 	}
 	if st.Right && !prev.Right {
 		f.Handle(campaign.ActionRight)
+		if menu {
+			mixer.Play(audio.SoundMenuMove)
+		}
 	}
 	if st.Confirm {
 		f.Handle(campaign.ActionConfirm)
+		if menu {
+			mixer.Play(audio.SoundMenuSelect)
+		}
 	}
 	if st.Back {
 		f.Handle(campaign.ActionBack)
@@ -147,9 +167,21 @@ func applyActions(f *campaign.Flow, st, prev input.State) {
 	}
 }
 
+// isMenuScene reports whether the flow shows a scene whose directional edges
+// move a selection and whose confirm selects it.
+func isMenuScene(f *campaign.Flow) bool {
+	switch f.Scene() {
+	case campaign.SceneLanguagePick, campaign.SceneMainMenu, campaign.SceneMap,
+		campaign.SceneSettings, campaign.SceneGameOver:
+		return true
+	default:
+		return false
+	}
+}
+
 // stepAndPlaySounds advances a run or boss fight and plays the sounds the
 // frame produced: the jump, slide and slam input sounds, then one sound per
-// run outcome.
+// run outcome and one per boss transition.
 func stepAndPlaySounds(f *campaign.Flow, mixer *audio.Mixer, st, prev input.State, dt float64) {
 	if f.Scene() != campaign.ScenePlay {
 		return
@@ -160,12 +192,26 @@ func stepAndPlaySounds(f *campaign.Flow, mixer *audio.Mixer, st, prev input.Stat
 	if st.Slide && !prev.Slide {
 		mixer.Play(slideSound(airborne(runRunner(f), f.Boss())))
 	}
+	beforeLives, beforePhase := bossState(f)
 	outcomes := f.StepRun(runner.Input{Left: st.Left, Right: st.Right, Jump: st.Jump, Slide: st.Slide}, dt)
 	for _, o := range outcomes {
-		if s, ok := outcomeSound(o); ok {
+		for _, s := range outcomeSounds(o) {
 			mixer.Play(s)
 		}
 	}
+	afterLives, afterPhase := bossState(f)
+	for _, s := range bossTransitionSounds(beforeLives, beforePhase, afterLives, afterPhase) {
+		mixer.Play(s)
+	}
+}
+
+// bossState returns the active boss's lives and phase, or -1 for each outside
+// a boss fight.
+func bossState(f *campaign.Flow) (lives, phase int) {
+	if b := f.Boss(); b != nil {
+		return b.Lives(), b.Phase()
+	}
+	return -1, -1
 }
 
 // runRunner returns the active run's runner, or nil outside a run.
@@ -198,32 +244,48 @@ func slideSound(airborne bool) audio.Sound {
 	return audio.SoundSlide
 }
 
-// outcomeSound maps one run outcome to its one-shot sound.
-func outcomeSound(o gameplay.Outcome) (audio.Sound, bool) {
+// outcomeSounds maps one run outcome to the one-shot sounds it plays.
+func outcomeSounds(o gameplay.Outcome) []audio.Sound {
 	switch o {
 	case gameplay.OutcomeStumble:
-		return audio.SoundHit, true
+		return []audio.Sound{audio.SoundHit}
 	case gameplay.OutcomeSnip:
-		return audio.SoundSnip, true
+		return []audio.Sound{audio.SoundSnip, audio.SoundMeow}
 	case gameplay.OutcomePit:
-		return audio.SoundHit, true
+		return []audio.Sound{audio.SoundFall, audio.SoundHonk}
 	case gameplay.OutcomeStomp:
-		return audio.SoundSlam, true
+		return []audio.Sound{audio.SoundStomp}
 	case gameplay.OutcomeFinished:
-		return audio.SoundCheckpoint, true
-	case gameplay.OutcomeShieldSaved:
-		return audio.SoundHairspray, true
+		return []audio.Sound{audio.SoundFanfare}
+	case gameplay.OutcomeDied:
+		return []audio.Sound{audio.SoundGameOver}
 	case gameplay.OutcomeComb:
-		return audio.SoundComb, true
+		return []audio.Sound{audio.SoundComb}
+	case gameplay.OutcomeShieldSaved:
+		return []audio.Sound{audio.SoundHairspray}
 	case gameplay.OutcomeHairspray:
-		return audio.SoundHairspray, true
+		return []audio.Sound{audio.SoundHairspray}
 	case gameplay.OutcomeCheckpoint:
-		return audio.SoundCheckpoint, true
+		return []audio.Sound{audio.SoundCheckpoint}
 	case gameplay.OutcomeLife:
-		return audio.SoundCheckpoint, true
+		return []audio.Sound{audio.SoundExtraLife}
 	default:
-		return audio.SoundJump, false
+		return nil
 	}
+}
+
+// bossTransitionSounds returns the one-shots for the transitions between the
+// two boss snapshots: a boss hit when lives dropped, a meow when the phase
+// rose.
+func bossTransitionSounds(beforeLives, beforePhase, afterLives, afterPhase int) []audio.Sound {
+	var out []audio.Sound
+	if afterLives < beforeLives {
+		out = append(out, audio.SoundBossHit)
+	}
+	if afterPhase > beforePhase {
+		out = append(out, audio.SoundMeow)
+	}
+	return out
 }
 
 // trackForScene returns the looping music track for the flow's current scene.
@@ -247,6 +309,8 @@ func trackForScene(f *campaign.Flow) audio.Track {
 			}
 		}
 		return audio.TrackMangroves
+	case campaign.SceneEnding, campaign.SceneCredits:
+		return audio.TrackEnding
 	default:
 		return audio.TrackMenu
 	}
@@ -261,8 +325,9 @@ func playTrack(mixer *audio.Mixer, current *audio.Track, want audio.Track) {
 	mixer.PlayMusic(want)
 }
 
-// applySettings pushes the flow's settings into the mixer and the window.
-func applySettings(mixer *audio.Mixer, f *campaign.Flow, prevFullscreen *bool) {
+// applySettings pushes the flow's settings into the mixer and the window, and
+// plays a preview one-shot once when a volume changes.
+func applySettings(mixer *audio.Mixer, f *campaign.Flow, prevSettings *campaign.Settings, prevFullscreen *bool) {
 	s := f.Settings()
 	mixer.SetMusicVolume(float32(s.MusicVolume))
 	mixer.SetSoundVolume(float32(s.SoundVolume))
@@ -270,6 +335,19 @@ func applySettings(mixer *audio.Mixer, f *campaign.Flow, prevFullscreen *bool) {
 		rl.ToggleFullscreen()
 		*prevFullscreen = s.Fullscreen
 	}
+	if sound, ok := volumePreviewSound(*prevSettings, s); ok {
+		mixer.Play(sound)
+	}
+	*prevSettings = s
+}
+
+// volumePreviewSound returns the one-shot to play when the music or sound
+// volume changes between prev and cur, and whether a preview is needed.
+func volumePreviewSound(prev, cur campaign.Settings) (audio.Sound, bool) {
+	if prev.MusicVolume == cur.MusicVolume && prev.SoundVolume == cur.SoundVolume {
+		return 0, false
+	}
+	return audio.SoundMenuSelect, true
 }
 
 // saveIfChanged writes the save whenever progress or settings changed.
