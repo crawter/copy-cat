@@ -454,6 +454,102 @@ func TestCombIncrementsCombsAndFiresOutcome(t *testing.T) {
 	}
 }
 
+func TestRunCountersStartAtZero(t *testing.T) {
+	cfg := runner.DefaultConfig()
+	l := levelgen.New(7, levelgen.Params{BaseSpeed: cfg.BaseSpeed, Length: 40, Density: 0})
+	r := gameplay.NewRun(runner.New(l, cfg), l, 3)
+
+	if r.TotalCombs != 0 || r.LivesLost != 0 || r.Stomps != 0 {
+		t.Fatalf("counters start non-zero: TotalCombs=%d LivesLost=%d Stomps=%d", r.TotalCombs, r.LivesLost, r.Stomps)
+	}
+}
+
+func TestRunCountersIncrementOnCombStompAndLifeLoss(t *testing.T) {
+	t.Run("comb", func(t *testing.T) {
+		p := pickupParams(levelgen.Comb)
+		l := findLevelUpTo(t, p, func(l *levelgen.Level) bool {
+			comb, ok := firstLaneOnePickup(l, levelgen.Comb)
+			return ok && clearRunUp(l, comb.Z, 1)
+		}, 20000)
+		comb, _ := firstLaneOnePickup(l, levelgen.Comb)
+
+		cfg := runner.DefaultConfig()
+		cfg.BaseSpeed = p.BaseSpeed
+		r := gameplay.NewRun(runner.New(l, cfg), l, 3)
+		r.Runner.Restart(comb.Z)
+
+		if !runUntilOutcome(t, r, gameplay.OutcomeComb, 60) {
+			t.Fatalf("never collected comb %+v", comb)
+		}
+		if r.TotalCombs != 1 {
+			t.Fatalf("TotalCombs = %d after collecting a comb, want 1", r.TotalCombs)
+		}
+	})
+
+	t.Run("stomp", func(t *testing.T) {
+		p := levelgen.Mangroves()
+		cfg := runner.DefaultConfig()
+		cfg.BaseSpeed = p.BaseSpeed
+
+		l := findLevel(t, p, func(l *levelgen.Level) bool {
+			e, ok := firstForced(l)
+			return ok && e.Kind == levelgen.Enemy && e.Lane == 1
+		})
+		enemy, _ := firstForced(l)
+
+		r := gameplay.NewRun(runner.New(l, cfg), l, 3)
+		stomped := false
+		for i := 0; i < 4000 && r.State == gameplay.StateRunning && !stomped; i++ {
+			var in runner.Input
+			if r.Runner.Z() >= enemy.Z-cfg.BaseSpeed*0.32 && r.Runner.Z() < enemy.Z {
+				in.Jump = true
+			}
+			for _, o := range r.Step(in, stepDT) {
+				if o == gameplay.OutcomeStomp {
+					stomped = true
+				}
+			}
+		}
+		if !stomped {
+			t.Fatalf("never stomped enemy %+v", enemy)
+		}
+		if r.Stomps != 1 {
+			t.Fatalf("Stomps = %d after a stomp, want 1", r.Stomps)
+		}
+	})
+
+	t.Run("life loss", func(t *testing.T) {
+		p := levelgen.Mangroves()
+		cfg := runner.DefaultConfig()
+		cfg.BaseSpeed = p.BaseSpeed
+
+		l := findLevel(t, p, func(l *levelgen.Level) bool {
+			e, ok := firstForced(l)
+			return ok && e.Kind == levelgen.Pit
+		})
+		pit, _ := firstForced(l)
+
+		r := gameplay.NewRun(runner.New(l, cfg), l, 3)
+		r.CheckpointZ = pit.Z - 4
+		r.Runner.Restart(r.CheckpointZ)
+
+		fell := false
+		for i := 0; i < 4000 && r.State == gameplay.StateRunning && !fell; i++ {
+			for _, o := range r.Step(runner.Input{}, stepDT) {
+				if o == gameplay.OutcomePit {
+					fell = true
+				}
+			}
+		}
+		if !fell {
+			t.Fatalf("never fell in pit %+v", pit)
+		}
+		if r.LivesLost != 1 {
+			t.Fatalf("LivesLost = %d after a pit, want 1", r.LivesLost)
+		}
+	})
+}
+
 func TestHundredthCombGrantsLifeAndCarriesRemainder(t *testing.T) {
 	p := pickupParams(levelgen.Comb)
 	l := findLevelUpTo(t, p, func(l *levelgen.Level) bool {

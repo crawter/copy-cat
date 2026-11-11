@@ -17,6 +17,9 @@ var (
 	bossLight  = Color{R: 232, G: 224, B: 236, A: 255}
 	bossChair  = Color{R: 200, G: 40, B: 90, A: 255}
 	bossMirror = Color{R: 150, G: 180, B: 200, A: 255}
+	// bossTelegraph marks the announced attack lane in the arena: a
+	// translucent red warning the hero can read before Copycat lands.
+	bossTelegraph = Color{R: 210, G: 56, B: 56, A: 160}
 )
 
 // BuildBossArena returns the draw list for the Last Haircut salon: a
