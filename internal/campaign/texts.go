@@ -26,6 +26,16 @@ var MainMenuItems = []Line{
 	{EN: "Quit", UA: "Вийти"},
 }
 
+// NewGameConfirmTitle is the New Game confirmation heading.
+var NewGameConfirmTitle = Line{EN: "Start a New Game?", UA: "Почати нову гру?"}
+
+// NewGameConfirmItems holds the New Game confirmation choices in selection
+// order.
+var NewGameConfirmItems = []Line{
+	{EN: "Yes", UA: "Так"},
+	{EN: "No", UA: "Ні"},
+}
+
 // MapTitle is the level selection map heading.
 var MapTitle = Line{EN: "Choose a Level", UA: "Оберіть рівень"}
 
@@ -73,7 +83,14 @@ var LanguageUkrainianName = Line{EN: "Ukrainian", UA: "Українська"}
 var PauseTitle = Line{EN: "Paused", UA: "Пауза"}
 
 // PauseHint tells the player how to leave the pause screen.
-var PauseHint = Line{EN: "Press pause to resume", UA: "Натисніть паузу, щоб продовжити"}
+var PauseHint = Line{EN: "Press P to resume, or choose an action", UA: "Натисніть P, щоб продовжити, або оберіть дію"}
+
+// PauseItems holds the pause choices in selection order.
+var PauseItems = []Line{
+	{EN: "Resume", UA: "Продовжити гру"},
+	{EN: "Restart", UA: "Спробувати знову"},
+	{EN: "Back to Menu", UA: "Назад у меню"},
+}
 
 // LevelEndTitle is the campaign level-end heading.
 var LevelEndTitle = Line{EN: "Level Complete", UA: "Рівень пройдено"}

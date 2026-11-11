@@ -34,6 +34,15 @@ func TestMenuLinesEverySceneYieldsLines(t *testing.T) {
 			},
 		},
 		{
+			name: "new game confirmation",
+			flow: func(t *testing.T) *campaign.Flow {
+				f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+				f.Handle(campaign.ActionDown) // New Game
+				f.Handle(campaign.ActionConfirm)
+				return f
+			},
+		},
+		{
 			name: "map",
 			flow: func(t *testing.T) *campaign.Flow {
 				return mapFlow(t)
@@ -449,6 +458,134 @@ func assertStompDoesNotFireLanding(t *testing.T, f *campaign.Flow) {
 	t.Fatal("no airborne enemy stomp found within 100 seeds")
 }
 
+func TestPauseLinesEntriesAndHighlight(t *testing.T) {
+	f := newGameFlow(t)
+	f.Handle(campaign.ActionPause)
+	if f.Scene() != campaign.ScenePause {
+		t.Fatalf("scene = %v, want ScenePause", f.Scene())
+	}
+
+	lines := MenuLines(f)
+	if len(lines) < 2+len(campaign.PauseItems) {
+		t.Fatalf("pause lines = %d, want at least %d", len(lines), 2+len(campaign.PauseItems))
+	}
+	if got, want := highlighted(t, lines).Text, textFor(f, campaign.PauseItems[0]); got != want {
+		t.Fatalf("pause highlight = %q, want %q", got, want)
+	}
+	for i, item := range campaign.PauseItems {
+		if got, want := lines[2+i].Text, textFor(f, item); got != want {
+			t.Fatalf("pause item %d = %q, want %q", i, got, want)
+		}
+	}
+
+	f.Handle(campaign.ActionDown)
+	if got, want := highlighted(t, MenuLines(f)).Text, textFor(f, campaign.PauseItems[1]); got != want {
+		t.Fatalf("pause highlight after down = %q, want %q", got, want)
+	}
+	f.Handle(campaign.ActionDown)
+	if got, want := highlighted(t, MenuLines(f)).Text, textFor(f, campaign.PauseItems[2]); got != want {
+		t.Fatalf("pause highlight after two downs = %q, want %q", got, want)
+	}
+}
+
+func TestNewGameConfirmLines(t *testing.T) {
+	f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	f.Handle(campaign.ActionDown) // New Game
+	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.SceneNewGameConfirm {
+		t.Fatalf("scene = %v, want SceneNewGameConfirm", f.Scene())
+	}
+
+	lines := MenuLines(f)
+	if got, want := len(lines), 1+len(campaign.NewGameConfirmItems); got != want {
+		t.Fatalf("confirm lines = %d, want %d", got, want)
+	}
+	if got, want := lines[0].Text, textFor(f, campaign.NewGameConfirmTitle); got != want {
+		t.Fatalf("confirm title = %q, want %q", got, want)
+	}
+	for i, item := range campaign.NewGameConfirmItems {
+		if got, want := lines[1+i].Text, textFor(f, item); got != want {
+			t.Fatalf("confirm item %d = %q, want %q", i, got, want)
+		}
+	}
+	if got, want := highlighted(t, lines).Text, textFor(f, campaign.NewGameConfirmItems[f.MenuIndex()]); got != want {
+		t.Fatalf("confirm highlight = %q, want %q", got, want)
+	}
+}
+
+func TestSettingsShowVolumePercentages(t *testing.T) {
+	f := settingsFlow(t)
+	text := joinLines(MenuLines(f))
+	if !strings.Contains(text, "100%") {
+		t.Fatalf("settings lines missing 100%%: %q", text)
+	}
+
+	f.Handle(campaign.ActionLeft) // music 100% -> 90%
+	if got := joinLines(MenuLines(f)); !strings.Contains(got, "90%") {
+		t.Fatalf("settings lines missing 90%% after music down: %q", got)
+	}
+}
+
+func TestVolumeTextPercentage(t *testing.T) {
+	for _, tc := range []struct {
+		in   float64
+		want string
+	}{
+		{1, "100%"},
+		{0.8, "80%"},
+		{0.05, "5%"},
+		{0, "0%"},
+	} {
+		if got := volumeText(tc.in); got != tc.want {
+			t.Errorf("volumeText(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestVolumeBarGeometry(t *testing.T) {
+	bar := volumeBar(18, 0.8)
+	if bar.X != uiMarginX+uiIndent {
+		t.Errorf("bar X = %d, want %d", bar.X, uiMarginX+uiIndent)
+	}
+	if bar.Y != 18+uiLineGap {
+		t.Errorf("bar Y = %d, want %d", bar.Y, 18+uiLineGap)
+	}
+	if bar.Width != volumeBarWidth || bar.Height != volumeBarHeight {
+		t.Errorf("bar size = %dx%d, want %dx%d", bar.Width, bar.Height, volumeBarWidth, volumeBarHeight)
+	}
+	if bar.Fill != 0.8 {
+		t.Errorf("bar Fill = %v, want 0.8", bar.Fill)
+	}
+	if got := volumeBar(0, -1).Fill; got != 0 {
+		t.Errorf("negative fraction clamped to %v, want 0", got)
+	}
+	if got := volumeBar(0, 2).Fill; got != 1 {
+		t.Errorf("oversized fraction clamped to %v, want 1", got)
+	}
+}
+
+func TestLogoOffsetChangesOverTime(t *testing.T) {
+	first := logoOffset(0)
+	changed := false
+	for step := 1; step <= 200; step++ {
+		if logoOffset(float64(step)*0.05) != first {
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		t.Fatalf("logoOffset did not change over time (first = %d)", first)
+	}
+
+	amplitude := int(logoBobAmplitude)
+	for _, clock := range []float64{0, 0.1, 0.5, 1, 3, 10} {
+		off := logoOffset(clock)
+		if off < -amplitude || off > amplitude {
+			t.Fatalf("logoOffset(%v) = %d outside ±%d", clock, off, amplitude)
+		}
+	}
+}
+
 // --- helpers ---
 
 func ukrainianSettings() campaign.Settings {
@@ -472,6 +609,11 @@ func newGameFlow(t *testing.T) *campaign.Flow {
 	t.Helper()
 	f := campaign.NewFlow(flatCampaign(), campaign.DefaultSettings(), campaign.NewProgress(), false)
 	f.Handle(campaign.ActionDown) // New Game
+	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.SceneNewGameConfirm {
+		t.Fatalf("scene = %v, want SceneNewGameConfirm", f.Scene())
+	}
+	f.Handle(campaign.ActionUp) // Yes
 	f.Handle(campaign.ActionConfirm)
 	if f.Scene() != campaign.SceneStory {
 		t.Fatalf("scene = %v, want SceneStory", f.Scene())
@@ -513,6 +655,11 @@ func gameOverFlow(t *testing.T) *campaign.Flow {
 	c, pit := pitCampaign(t)
 	f := campaign.NewFlow(c, campaign.DefaultSettings(), campaign.NewProgress(), false)
 	f.Handle(campaign.ActionDown) // New Game
+	f.Handle(campaign.ActionConfirm)
+	if f.Scene() != campaign.SceneNewGameConfirm {
+		t.Fatalf("scene = %v, want SceneNewGameConfirm", f.Scene())
+	}
+	f.Handle(campaign.ActionUp) // Yes
 	f.Handle(campaign.ActionConfirm)
 	if f.Scene() != campaign.SceneStory {
 		t.Fatalf("scene = %v, want SceneStory", f.Scene())
