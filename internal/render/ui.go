@@ -15,11 +15,14 @@ import (
 )
 
 // ScreenLine is one line of UI text: what it says, where it sits in the
-// unscaled screen layout, and whether the menu cursor highlights it.
+// unscaled screen layout, whether the menu cursor highlights it, and how much
+// larger than a normal line it is drawn. Scale defaults to 1 when it is zero
+// or negative.
 type ScreenLine struct {
 	Text        string
 	X, Y        int
 	Highlighted bool
+	Scale       int
 }
 
 // UI draws the game's screens from a flow's plain state. It is created once
@@ -34,6 +37,32 @@ type UI struct {
 	scene   campaign.Scene
 	sceneAt time.Time
 	started time.Time
+
+	// prevTotalCombs, prevBald, prevLivesLost and prevAirborne are the last
+	// run state drawScene observed, so it can spawn captions and particle
+	// bursts exactly when a counter changes or the hero lands.
+	prevTotalCombs int
+	prevBald       bool
+	prevLivesLost  int
+	prevAirborne   bool
+	airTracked     bool
+
+	// caption and captionAt are the short play caption currently on screen.
+	caption   []ScreenLine
+	captionAt time.Time
+	// introLines and introAt are the level intro card shown when a run starts.
+	introLines []ScreenLine
+	introAt    time.Time
+	// bursts are the active particle bursts.
+	bursts []burst
+}
+
+// burst is one short-lived particle burst spawned at a hero position.
+type burst struct {
+	cmds   []Cmd
+	origin Vec3
+	at     time.Time
+	life   time.Duration
 }
 
 // NewUI returns a UI that draws its text with fnt. The font is read-only and
@@ -52,6 +81,11 @@ const (
 	uiIndent  = 4
 	uiLineGap = 10 // matches font.Font's default line height
 
+	// uiLogoScale and uiTaglineScale size the main-menu logo and tagline
+	// relative to a normal UI line.
+	uiLogoScale    = 4
+	uiTaglineScale = 2
+
 	// storyWrapChars is the maximum rune count a story or ending line holds
 	// before it wraps to the next line.
 	storyWrapChars = 60
@@ -59,6 +93,17 @@ const (
 	// sceneFadeDuration is how many seconds a scene-change fade takes to
 	// clear.
 	sceneFadeDuration = 0.35
+
+	// captionDuration is how many seconds a play caption stays on screen.
+	captionDuration = 1.6
+	// levelIntroDuration is how many seconds the level intro card stays on
+	// screen after a run starts.
+	levelIntroDuration = 1.6
+
+	// burstLife is how long a particle burst lives before it is dropped.
+	burstLife = 400 * time.Millisecond
+	// burstRise is how many meters a particle burst rises over its life.
+	burstRise = 0.8
 
 	// Copycat trail distance tuning: a base gap grows with the run's speed
 	// and shrinks as Chase closes in, never below copycatMinGap.
@@ -76,6 +121,21 @@ var (
 	uiHighlightBar  = Color{R: 240, G: 202, B: 112, A: 255}
 )
 
+// Render-layer labels for the level-end stats and the play captions. They
+// live here rather than in the campaign texts because only the render layer
+// uses them.
+var (
+	uiTotalCombs = campaign.Line{EN: "Total Combs", UA: "Усього гребінців"}
+	uiLivesLost  = campaign.Line{EN: "Lives Lost", UA: "Втрачено життів"}
+	uiStomps     = campaign.Line{EN: "Stomps", UA: "Стомпів"}
+
+	uiCombCaption = campaign.Line{EN: "Comb!", UA: "Гребінець!"}
+	uiSnipCaption = campaign.Line{EN: "Snip! Hair lost.", UA: "Чик! Волосся втрачено."}
+	uiLandCaption = campaign.Line{EN: "Landed!", UA: "Приземлення!"}
+
+	uiEndless = campaign.Line{EN: "Endless Run", UA: "Нескінченний забіг"}
+)
+
 // cameraPerspective is raylib's CameraPerspective (0). It stays an untyped
 // constant so the assignment compiles against either int32 or the binding's
 // named CameraProjection field type.
@@ -91,6 +151,8 @@ func (u *UI) Draw(f *campaign.Flow, w, h int) {
 	switch f.Scene() {
 	case campaign.ScenePlay:
 		u.drawScene(f)
+		u.drawOverlay(u.caption, w, h, u.captionAt, captionDuration)
+		u.drawOverlay(u.introLines, w, h, u.introAt, levelIntroDuration)
 		u.drawLines(HUDLines(f), w, h, false)
 	case campaign.ScenePause:
 		u.drawScene(f)
@@ -103,12 +165,72 @@ func (u *UI) Draw(f *campaign.Flow, w, h int) {
 	u.drawFade(w, h)
 }
 
-// trackScene records when the flow changes scene so the fade can restart.
+// trackScene records when the flow changes scene so the fade can restart. A
+// transition into play that is not a pause resume also resets the one-shot
+// play overlays, because that is when a new run or boss fight begins.
 func (u *UI) trackScene(f *campaign.Flow) {
-	if f.Scene() != u.scene {
-		u.scene = f.Scene()
-		u.sceneAt = time.Now()
+	if f.Scene() == u.scene {
+		return
 	}
+	prev := u.scene
+	u.scene = f.Scene()
+	u.sceneAt = time.Now()
+	if f.Scene() == campaign.ScenePlay && prev != campaign.ScenePause {
+		u.beginPlay(f)
+	}
+}
+
+// beginPlay resets the captions, particles and level intro when a new run or
+// boss fight starts. Resuming from pause does not call it.
+func (u *UI) beginPlay(f *campaign.Flow) {
+	u.introLines = LevelIntroLines(f)
+	u.introAt = time.Now()
+	u.caption = nil
+	u.captionAt = time.Time{}
+	u.bursts = nil
+	u.airTracked = false
+	if r := f.Run(); r != nil {
+		u.prevTotalCombs = r.TotalCombs
+		u.prevBald = r.Bald
+		u.prevLivesLost = r.LivesLost
+		u.prevAirborne = r.Runner.Airborne()
+		u.airTracked = true
+	}
+}
+
+// drawOverlay draws lines centered on the window behind a translucent
+// backdrop for duration seconds after at. It draws nothing once the overlay
+// has expired or when there are no lines.
+func (u *UI) drawOverlay(lines []ScreenLine, w, h int, at time.Time, duration float64) {
+	if len(lines) == 0 || duration <= 0 {
+		return
+	}
+	if time.Since(at).Seconds() >= duration {
+		return
+	}
+	scale := u.scale
+	if scale < 1 {
+		scale = 1
+	}
+	bw := u.blockWidth(lines) * scale
+	bh := u.blockHeight(lines) * scale
+	ox := (w - bw) / 2
+	oy := (h - bh) / 2
+	if ox < 0 {
+		ox = 0
+	}
+	if oy < 0 {
+		oy = 0
+	}
+	pad := 2 * scale
+	rl.DrawRectangle(
+		int32(ox-pad),
+		int32(oy-pad),
+		int32(bw+2*pad),
+		int32(bh+2*pad),
+		rlColor(Color{R: 0, G: 0, B: 0, A: 150}),
+	)
+	u.drawLines(lines, w, h, true)
 }
 
 // drawFade overlays the scene-change fade on the whole window. It draws
@@ -198,6 +320,23 @@ func StoryLines(f *campaign.Flow) []ScreenLine {
 	}
 }
 
+// LevelIntroLines returns the short level intro card shown when a run starts:
+// the current level number and name, or the endless banner.
+func LevelIntroLines(f *campaign.Flow) []ScreenLine {
+	if f.Endless() {
+		return []ScreenLine{uiLine(textFor(f, uiEndless), uiMarginX, uiMarginY, false)}
+	}
+	lv, ok := f.CurrentLevel()
+	if !ok {
+		return nil
+	}
+	name := textFor(f, campaign.LevelNames[lv.ID-1])
+	return []ScreenLine{
+		uiLineScaled(fmt.Sprintf("%s %d", textFor(f, uiLevel), lv.ID), uiMarginX, uiMarginY, false, uiTaglineScale),
+		uiLineScaled(name, uiMarginX, uiMarginY+uiLineGap*uiTaglineScale, false, uiLogoScale),
+	}
+}
+
 func languagePickLines(f *campaign.Flow) []ScreenLine {
 	return []ScreenLine{
 		uiLine(textFor(f, campaign.LanguagePickTitle), uiMarginX, uiMarginY, false),
@@ -207,9 +346,15 @@ func languagePickLines(f *campaign.Flow) []ScreenLine {
 }
 
 func mainMenuLines(f *campaign.Flow) []ScreenLine {
-	lines := []ScreenLine{uiLine(textFor(f, campaign.GameTitle), uiMarginX, uiMarginY, false)}
+	logoY := uiMarginY
+	taglineY := logoY + uiLineGap*uiLogoScale
+	menuY := taglineY + uiLineGap*uiTaglineScale + uiLineGap
+	lines := []ScreenLine{
+		uiLineScaled(textFor(f, campaign.GameTitle), uiMarginX, logoY, false, uiLogoScale),
+		uiLineScaled(textFor(f, campaign.TitleTagline), uiMarginX+uiIndent, taglineY, false, uiTaglineScale),
+	}
 	for i, item := range campaign.MainMenuItems {
-		lines = append(lines, uiLine(textFor(f, item), uiMarginX+uiIndent, uiMarginY+(i+1)*uiLineGap, i == f.MenuIndex()))
+		lines = append(lines, uiLine(textFor(f, item), uiMarginX+uiIndent, menuY+i*uiLineGap, i == f.MenuIndex()))
 	}
 	return lines
 }
@@ -260,11 +405,14 @@ func levelEndLines(f *campaign.Flow) []ScreenLine {
 	lines := []ScreenLine{uiLine(textFor(f, title), uiMarginX, uiMarginY, false)}
 	lines = append(lines, uiLine(textFor(f, campaign.MedalsOfShame[cause]), uiMarginX+uiIndent, uiMarginY+uiLineGap, false))
 	y := uiMarginY + 2*uiLineGap
-	if f.Endless() {
-		if r := f.Run(); r != nil {
-			lines = append(lines, uiLine(fmt.Sprintf("%s: %.0f m", hudText(f, gameplay.HUDDistance), r.Runner.Z()), uiMarginX+uiIndent, y, false))
-			y += uiLineGap
-		}
+	if r := f.Run(); r != nil {
+		lines = append(lines,
+			uiLine(fmt.Sprintf("%s: %d", textFor(f, uiTotalCombs), r.TotalCombs), uiMarginX+uiIndent, y, false),
+			uiLine(fmt.Sprintf("%s: %d", textFor(f, uiLivesLost), r.LivesLost), uiMarginX+uiIndent, y+uiLineGap, false),
+			uiLine(fmt.Sprintf("%s: %d", textFor(f, uiStomps), r.Stomps), uiMarginX+uiIndent, y+2*uiLineGap, false),
+			uiLine(fmt.Sprintf("%s: %.0f m", hudText(f, gameplay.HUDDistance), r.Runner.Z()), uiMarginX+uiIndent, y+3*uiLineGap, false),
+		)
+		y += 4 * uiLineGap
 	}
 	lines = append(lines, uiLine(textFor(f, campaign.LevelEndHint), uiMarginX+uiIndent, y, false))
 	return lines
@@ -318,8 +466,32 @@ func creditsLines(f *campaign.Flow) []ScreenLine {
 	return lines
 }
 
+// CombCaption returns the play caption for a comb pickup, showing the run's
+// total comb count.
+func CombCaption(f *campaign.Flow, totalCombs int) []ScreenLine {
+	return []ScreenLine{uiLine(fmt.Sprintf("%s: %d", textFor(f, uiCombCaption), totalCombs), 0, 0, false)}
+}
+
+// SnipCaption returns the play caption for Copycat's snip. When bald is
+// false there is nothing to caption.
+func SnipCaption(f *campaign.Flow, bald bool, livesLost int) []ScreenLine {
+	if !bald {
+		return nil
+	}
+	return []ScreenLine{uiLine(fmt.Sprintf("%s %s: %d", textFor(f, uiSnipCaption), textFor(f, uiLivesLost), livesLost), 0, 0, false)}
+}
+
+// LandingCaption returns the play caption for a hero landing.
+func LandingCaption(f *campaign.Flow) []ScreenLine {
+	return []ScreenLine{uiLine(textFor(f, uiLandCaption), 0, 0, false)}
+}
+
 func uiLine(text string, x, y int, highlighted bool) ScreenLine {
-	return ScreenLine{Text: text, X: x, Y: y, Highlighted: highlighted}
+	return uiLineScaled(text, x, y, highlighted, 1)
+}
+
+func uiLineScaled(text string, x, y int, highlighted bool, scale int) ScreenLine {
+	return ScreenLine{Text: text, X: x, Y: y, Highlighted: highlighted, Scale: scale}
 }
 
 func textFor(f *campaign.Flow, l campaign.Line) string {
@@ -391,7 +563,8 @@ func storyWrap(text string, x, y, gap int) []ScreenLine {
 // drawScene draws the 3D scene behind play and pause: the generated corridor
 // with the hero and Copycat, or the boss arena with the hero and Copycat's
 // boss form. The hero is animated by the seconds elapsed since the UI was
-// created.
+// created. During a run it also detects comb, snip and landing events and
+// draws the matching particle bursts.
 func (u *UI) drawScene(f *campaign.Flow) {
 	cam := u.cameraFor(f)
 	rl.BeginMode3D(cam)
@@ -422,6 +595,9 @@ func (u *UI) drawScene(f *campaign.Flow) {
 	u.drawModelAt(BuildHeroAt(heroPoseFor(r), r.Bald, t), pos)
 	chase := CopycatDistance(r.Runner.Speed(), r.Chase)
 	u.drawModelAt(BuildCopycat(chase), Vec3{X: pos.X, Y: 0, Z: pos.Z})
+
+	u.updateRunOverlays(f, r, pos)
+	u.drawBursts()
 }
 
 func (u *UI) cameraFor(f *campaign.Flow) rl.Camera3D {
@@ -512,6 +688,72 @@ func CopycatDistance(speed, chase float64) float64 {
 	return gap
 }
 
+// updateRunOverlays tracks the run counters and the hero's airborne state,
+// spawning the matching caption and particle burst on comb pickups, snips and
+// landings.
+func (u *UI) updateRunOverlays(f *campaign.Flow, r *gameplay.Run, pos Vec3) {
+	air := r.Runner.Airborne()
+	if !u.airTracked {
+		u.prevAirborne = air
+		u.airTracked = true
+	}
+
+	if r.TotalCombs > u.prevTotalCombs {
+		u.showCaption(CombCaption(f, r.TotalCombs))
+		u.spawnBurst(BuildCombBurst(), pos)
+	}
+	if r.Bald && !u.prevBald {
+		u.showCaption(SnipCaption(f, r.Bald, r.LivesLost))
+		u.spawnBurst(BuildSnipBurst(), pos)
+	}
+	if u.prevAirborne && !air {
+		u.showCaption(LandingCaption(f))
+		u.spawnBurst(BuildLandingBurst(), pos)
+	}
+
+	u.prevTotalCombs = r.TotalCombs
+	u.prevBald = r.Bald
+	u.prevLivesLost = r.LivesLost
+	u.prevAirborne = air
+}
+
+func (u *UI) showCaption(lines []ScreenLine) {
+	u.caption = lines
+	u.captionAt = time.Now()
+}
+
+func (u *UI) spawnBurst(cs []Cmd, at Vec3) {
+	u.bursts = append(u.bursts, burst{cmds: cs, origin: at, at: time.Now(), life: burstLife})
+}
+
+// drawBursts draws and ages the active particle bursts, dropping expired
+// ones. The commands rise and fade as they age.
+func (u *UI) drawBursts() {
+	now := time.Now()
+	kept := u.bursts[:0]
+	for _, b := range u.bursts {
+		age := now.Sub(b.at)
+		if age >= b.life {
+			continue
+		}
+		p := age.Seconds() / b.life.Seconds()
+		rise := float32(p * burstRise)
+		alpha := uint8(255 * (1 - p))
+		for _, c := range b.cmds {
+			cc := c
+			cc.Pos = Vec3{
+				X: c.Pos.X + b.origin.X,
+				Y: c.Pos.Y + b.origin.Y + rise,
+				Z: c.Pos.Z + b.origin.Z,
+			}
+			cc.Color.A = uint8(float64(c.Color.A) * float64(alpha) / 255)
+			drawCmd(cc)
+		}
+		kept = append(kept, b)
+	}
+	u.bursts = kept
+}
+
 // drawLines lays out and draws the screen lines. center centers the block in
 // the window; the HUD passes false and keeps its top-left anchor.
 func (u *UI) drawLines(lines []ScreenLine, w, h int, center bool) {
@@ -542,8 +784,12 @@ func (u *UI) blockWidth(lines []ScreenLine) int {
 	width := 0
 	for _, l := range lines {
 		w, _ := u.fnt.Measure(l.Text)
-		if l.X+w > width {
-			width = l.X + w
+		ls := l.Scale
+		if ls < 1 {
+			ls = 1
+		}
+		if l.X+w*ls > width {
+			width = l.X + w*ls
 		}
 	}
 	return width
@@ -552,48 +798,61 @@ func (u *UI) blockWidth(lines []ScreenLine) int {
 func (u *UI) blockHeight(lines []ScreenLine) int {
 	height := 0
 	for _, l := range lines {
-		if l.Y+u.fnt.LineHeight() > height {
-			height = l.Y + u.fnt.LineHeight()
+		ls := l.Scale
+		if ls < 1 {
+			ls = 1
+		}
+		if l.Y+u.fnt.LineHeight()*ls > height {
+			height = l.Y + u.fnt.LineHeight()*ls
 		}
 	}
 	return height
 }
 
 func (u *UI) drawLine(l ScreenLine, x, y int) {
+	lineScale := l.Scale
+	if lineScale < 1 {
+		lineScale = 1
+	}
+	baseScale := u.scale
+	if baseScale < 1 {
+		baseScale = 1
+	}
+	pixelScale := baseScale * lineScale
 	col := rlColor(uiTextColor)
 	if l.Highlighted {
 		col = rlColor(uiHighlightText)
 		w, _ := u.fnt.Measure(l.Text)
 		rl.DrawRectangle(
-			int32(x-2*u.scale),
-			int32(y-u.scale),
-			int32(w*u.scale+4*u.scale),
-			int32(u.fnt.LineHeight()*u.scale+2*u.scale),
+			int32(x-2*pixelScale),
+			int32(y-pixelScale),
+			int32(w*pixelScale+4*pixelScale),
+			int32(u.fnt.LineHeight()*pixelScale+2*pixelScale),
 			rlColor(uiHighlightBar),
 		)
 	}
 	for _, r := range l.Text {
 		g, ok := u.fnt.Glyph(r)
 		if !ok {
-			x += u.fnt.SpaceWidth() * u.scale
+			x += u.fnt.SpaceWidth() * pixelScale
 			continue
 		}
-		u.drawGlyph(g, x, y, col)
-		x += g.Advance * u.scale
+		u.drawGlyph(g, x, y, col, pixelScale)
+		x += g.Advance * pixelScale
 	}
 }
 
-func (u *UI) drawGlyph(g font.Glyph, x, y int, col rl.Color) {
+func (u *UI) drawGlyph(g font.Glyph, x, y int, col rl.Color, pixelScale int) {
 	for row := 0; row < g.Height; row++ {
 		for colIdx := 0; colIdx < g.Width; colIdx++ {
 			if !g.Pixels[row*g.Width+colIdx] {
 				continue
 			}
 			rl.DrawRectangle(
-				int32(x+colIdx*u.scale),
-				int32(y+row*u.scale),
-				int32(u.scale),
-				int32(u.scale),
+				int32(x+colIdx*pixelScale),
+				int32(y+row*pixelScale),
+				int32(pixelScale),
+				int32(pixelScale),
 				col,
 			)
 		}
