@@ -9,7 +9,8 @@ package audio
 // Track identifies one looping music track.
 type Track int
 
-// The looping music tracks, one per world theme plus menu and boss themes.
+// The looping music tracks, one per world theme plus menu, boss and ending
+// themes.
 const (
 	// TrackMenu is the looping theme played on the main menu.
 	TrackMenu Track = iota

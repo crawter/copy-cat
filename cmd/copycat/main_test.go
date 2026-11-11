@@ -31,6 +31,33 @@ func TestSlideSoundSelection(t *testing.T) {
 	}
 }
 
+func TestIsMenuScene(t *testing.T) {
+	tests := []struct {
+		name  string
+		scene campaign.Scene
+		want  bool
+	}{
+		{name: "language pick", scene: campaign.SceneLanguagePick, want: true},
+		{name: "main menu", scene: campaign.SceneMainMenu, want: true},
+		{name: "map", scene: campaign.SceneMap, want: true},
+		{name: "settings", scene: campaign.SceneSettings, want: true},
+		{name: "game over", scene: campaign.SceneGameOver, want: true},
+		{name: "play", scene: campaign.ScenePlay, want: false},
+		{name: "pause", scene: campaign.ScenePause, want: false},
+		{name: "level end", scene: campaign.SceneLevelEnd, want: false},
+		{name: "story", scene: campaign.SceneStory, want: false},
+		{name: "ending", scene: campaign.SceneEnding, want: false},
+		{name: "credits", scene: campaign.SceneCredits, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isMenuScene(tt.scene); got != tt.want {
+				t.Fatalf("isMenuScene(%v) = %v, want %v", tt.scene, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSlideOnContainerMapsToSlide(t *testing.T) {
 	r := runnerOnContainer(t)
 	if airborne(r, nil) {
@@ -38,6 +65,199 @@ func TestSlideOnContainerMapsToSlide(t *testing.T) {
 	}
 	if got := slideSound(airborne(r, nil)); got != audio.SoundSlide {
 		t.Fatalf("slide on container = %v, want SoundSlide", got)
+	}
+}
+
+func TestOutcomeSounds(t *testing.T) {
+	tests := []struct {
+		name string
+		in   gameplay.Outcome
+		want []audio.Sound
+	}{
+		{name: "stumble", in: gameplay.OutcomeStumble, want: []audio.Sound{audio.SoundHit}},
+		{name: "snip", in: gameplay.OutcomeSnip, want: []audio.Sound{audio.SoundSnip, audio.SoundMeow}},
+		{name: "pit", in: gameplay.OutcomePit, want: []audio.Sound{audio.SoundFall, audio.SoundHonk}},
+		{name: "stomp", in: gameplay.OutcomeStomp, want: []audio.Sound{audio.SoundStomp}},
+		{name: "finished", in: gameplay.OutcomeFinished, want: []audio.Sound{audio.SoundFanfare}},
+		{name: "died", in: gameplay.OutcomeDied, want: []audio.Sound{audio.SoundGameOver}},
+		{name: "shield saved", in: gameplay.OutcomeShieldSaved, want: []audio.Sound{audio.SoundHairspray}},
+		{name: "comb", in: gameplay.OutcomeComb, want: []audio.Sound{audio.SoundComb}},
+		{name: "hairspray", in: gameplay.OutcomeHairspray, want: []audio.Sound{audio.SoundHairspray}},
+		{name: "checkpoint", in: gameplay.OutcomeCheckpoint, want: []audio.Sound{audio.SoundCheckpoint}},
+		{name: "life", in: gameplay.OutcomeLife, want: []audio.Sound{audio.SoundExtraLife}},
+		{name: "unknown", in: gameplay.Outcome(99), want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := outcomeSounds(tt.in)
+			assertSounds(t, got, tt.want)
+		})
+	}
+}
+
+func TestBossTransitionSounds(t *testing.T) {
+	t.Run("hit", func(t *testing.T) {
+		hit := gameplay.NewBossFight(3)
+		// Three half-second steps drive the first two phase-1 attacks; the
+		// second lands on the center lane where the hero stands, so the fight
+		// takes one hit: three lives drop to two, still in phase 1.
+		for i := 0; i < 3; i++ {
+			hit.Step(runner.Input{}, 0.5)
+		}
+		if hit.Lives() != 2 || hit.Phase() != 1 {
+			t.Fatalf("scripted hit = lives %d phase %d, want lives 2 phase 1", hit.Lives(), hit.Phase())
+		}
+		got := bossTransitionSounds(gameplay.NewBossFight(3), hit)
+		assertSounds(t, got, []audio.Sound{audio.SoundBossHit})
+	})
+
+	t.Run("phase up", func(t *testing.T) {
+		phase := gameplay.NewBossFight(3)
+		// Drive the fight through its two phase-1 attacks: it takes one hit
+		// and opens a vulnerable window. The window stays open into the next
+		// step, where moving to the crouch lane and jumping stomps Copycat
+		// from phase 1 to phase 2.
+		for i := 0; i < 3; i++ {
+			phase.Step(runner.Input{}, 0.5)
+		}
+		phase.Step(runner.Input{Right: true, Jump: true}, 0.5)
+		if phase.Phase() != 2 {
+			t.Fatalf("Phase = %d after scripted stomp, want 2", phase.Phase())
+		}
+		if phase.Lives() != 2 {
+			t.Fatalf("Lives = %d after scripted stomp, want 2", phase.Lives())
+		}
+		got := bossTransitionSounds(gameplay.NewBossFight(2), phase)
+		assertSounds(t, got, []audio.Sound{audio.SoundMeow})
+	})
+}
+
+func TestTrackForScene(t *testing.T) {
+	c := campaign.Default()
+	tests := []struct {
+		name  string
+		setup func(*campaign.Flow)
+		want  audio.Track
+	}{
+		{
+			name:  "main menu",
+			setup: func(f *campaign.Flow) {},
+			want:  audio.TrackMenu,
+		},
+		{
+			name:  "mangroves run",
+			setup: func(f *campaign.Flow) { f.StartLevel(1) },
+			want:  audio.TrackMangroves,
+		},
+		{
+			name:  "harbor run",
+			setup: func(f *campaign.Flow) { f.StartLevel(4) },
+			want:  audio.TrackHarbor,
+		},
+		{
+			name:  "neon run",
+			setup: func(f *campaign.Flow) { f.StartLevel(7) },
+			want:  audio.TrackNeon,
+		},
+		{
+			name:  "endless run",
+			setup: func(f *campaign.Flow) { f.StartEndless(42) },
+			want:  audio.TrackNeon,
+		},
+		{
+			name:  "boss fight",
+			setup: func(f *campaign.Flow) { f.StartBoss() },
+			want:  audio.TrackBoss,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := campaign.NewFlow(c, campaign.DefaultSettings(), campaign.Progress{Unlocked: 10}, false)
+			tt.setup(f)
+			if got := trackForScene(f); got != tt.want {
+				t.Fatalf("trackForScene(%v) = %v, want %v", f.Scene(), got, tt.want)
+			}
+		})
+	}
+
+	t.Run("ending and credits", func(t *testing.T) {
+		f := campaign.NewFlow(c, campaign.DefaultSettings(), campaign.Progress{Unlocked: 10}, false)
+		f.StartBoss()
+		winBossFlow(t, f)
+		if f.Scene() != campaign.SceneEnding {
+			t.Fatalf("Scene = %v after boss win, want SceneEnding", f.Scene())
+		}
+		if got := trackForScene(f); got != audio.TrackEnding {
+			t.Fatalf("trackForScene(SceneEnding) = %v, want TrackEnding", got)
+		}
+
+		f.Handle(campaign.ActionConfirm)
+		if f.Scene() != campaign.SceneCredits {
+			t.Fatalf("Scene = %v after ending confirm, want SceneCredits", f.Scene())
+		}
+		if got := trackForScene(f); got != audio.TrackEnding {
+			t.Fatalf("trackForScene(SceneCredits) = %v, want TrackEnding", got)
+		}
+	})
+}
+
+// winBossFlow drives the active boss fight with a dodge-and-stomp script until
+// it wins and the flow reaches the ending card.
+func winBossFlow(t *testing.T, f *campaign.Flow) {
+	t.Helper()
+	b := f.Boss()
+	if b == nil {
+		t.Fatalf("no boss fight to win")
+	}
+	for i := 0; i < 4000 && b.State() == gameplay.BossFighting; i++ {
+		f.StepRun(bossWinningInput(b), flowDT)
+	}
+	if b.State() != gameplay.BossWon {
+		t.Fatalf("boss state = %v, want BossWon", b.State())
+	}
+}
+
+// bossWinningInput reacts to the fight: dodge attacks, and stomp Copycat when
+// he is vulnerable.
+func bossWinningInput(b *gameplay.BossFight) runner.Input {
+	if b.Vulnerable() {
+		var in runner.Input
+		switch {
+		case b.HeroLane() < b.AttackLane():
+			in.Right = true
+		case b.HeroLane() > b.AttackLane():
+			in.Left = true
+		default:
+			in.Jump = true
+		}
+		return in
+	}
+	var in runner.Input
+	switch {
+	case b.HeroLane() < b.AttackLane():
+		in.Right = true
+	case b.HeroLane() > b.AttackLane():
+		in.Left = true
+	default:
+		if b.AttackKind() == gameplay.AttackLow {
+			in.Jump = true
+		} else if !b.Jumping() {
+			in.Slide = true
+		}
+	}
+	return in
+}
+
+// assertSounds fails when got differs from want in order or length.
+func assertSounds(t *testing.T, got, want []audio.Sound) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("sounds = %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("sounds = %v, want %v", got, want)
+		}
 	}
 }
 

@@ -125,10 +125,17 @@ func run() error {
 
 // applyActions turns the frame's pressed edges into flow actions. Left and
 // right are held in the input state, so their menu edges are derived here.
-// In a selectable menu the directional edges play the move blip and confirm
-// plays the select chime.
+// While the flow is on a selectable menu, it also plays the cursor-move and
+// confirm blips.
 func applyActions(f *campaign.Flow, mixer *audio.Mixer, st, prev input.State) {
-	menu := isMenuScene(f)
+	if isMenuScene(f.Scene()) {
+		if st.Up || st.Down {
+			mixer.Play(audio.SoundMenuMove)
+		}
+		if st.Confirm {
+			mixer.Play(audio.SoundMenuSelect)
+		}
+	}
 	if st.Up {
 		f.Handle(campaign.ActionUp)
 		if menu {
