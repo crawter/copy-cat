@@ -34,6 +34,12 @@ const (
 	maxElementSpan = 8.0
 	floorTileLen   = 2.0
 	propSpacing    = 6.0
+
+	// fogStart and fogEnd bound the distance fog band, in meters from the
+	// camera along Z. Commands nearer than fogStart keep their color; those
+	// farther than fogEnd become the backdrop color.
+	fogStart = 16.0
+	fogEnd   = 36.0
 )
 
 // laneX returns the x offset, in meters, of a lane index in [0, 2].
@@ -71,6 +77,28 @@ func BuildWorld(l *levelgen.Level, theme campaign.Theme, cam Cam) []Cmd {
 		cam:   cam,
 	}
 	return b.build()
+}
+
+// FogCmds returns a copy of cs with every command's color lerped toward back
+// by how far the command sits from the camera along Z. It leaves cs unchanged
+// so BuildWorld and BuildBossArena keep returning their exact colors.
+func FogCmds(cs []Cmd, back Color, camZ float64) []Cmd {
+	out := make([]Cmd, len(cs))
+	for i, c := range cs {
+		out[i] = c
+		out[i].Color = LerpColor(c.Color, back, fogFactor(math.Abs(float64(c.Pos.Z)-camZ)))
+	}
+	return out
+}
+
+func fogFactor(distance float64) float64 {
+	if distance <= fogStart {
+		return 0
+	}
+	if distance >= fogEnd {
+		return 1
+	}
+	return (distance - fogStart) / (fogEnd - fogStart)
 }
 
 type worldBuilder struct {

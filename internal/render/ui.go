@@ -11,13 +11,16 @@ import (
 	"copycat/internal/campaign"
 	"copycat/internal/font"
 	"copycat/internal/gameplay"
+	"copycat/internal/levelgen"
 )
 
 // ScreenLine is one line of UI text: what it says, where it sits in the
-// unscaled screen layout, and whether the menu cursor highlights it.
+// unscaled screen layout, at what scale it is drawn, and whether the menu
+// cursor highlights it.
 type ScreenLine struct {
 	Text        string
 	X, Y        int
+	Scale       int
 	Highlighted bool
 }
 
@@ -27,6 +30,21 @@ type UI struct {
 	fnt   *font.Font
 	scale int
 	anim  float32 // seconds of animation elapsed, advanced every frame
+
+	fadeCover   float64        // 1 hides the scene behind the fade, 0 shows it
+	fadeScene   campaign.Scene // scene the current fade started on
+	fadeStarted bool
+
+	caption     captionSnap
+	captionText string
+	captionLeft float64
+
+	introRun  *gameplay.Run
+	introBoss *gameplay.BossFight
+	introLeft float64
+
+	particles    []Particle
+	particleCmds []Cmd
 }
 
 // NewUI returns a UI that draws its text with fnt. The font is read-only and
@@ -35,18 +53,54 @@ func NewUI(fnt *font.Font) *UI {
 	return &UI{fnt: fnt, scale: uiScale}
 }
 
+// captionSnap holds the previous run or boss counters the caption layer and
+// the particle layer compare against, so each state transition earns exactly
+// one caption and one particle burst.
+type captionSnap struct {
+	run  *gameplay.Run
+	boss *gameplay.BossFight
+
+	livesLost int
+	stomps    int
+	bald      bool
+	chase     float64
+	shield    int
+	phase     int
+
+	prevAirborne   bool // previous airborne state, to spawn landing dust
+	prevTotalCombs int  // previous total combs, to spawn comb sparkles
+}
+
 // The screen layout is described in the font's unscaled pixel grid; Draw
 // scales it to the window.
 const (
-	uiScale   = 2
-	uiMarginX = 8
-	uiMarginY = 8
-	uiIndent  = 4
-	uiLineGap = 10 // matches font.Font's default line height
+	// uiScale is the scale for body text and menu items.
+	uiScale = 2
+	// uiHeadingScale is the scale for screen headings.
+	uiHeadingScale = 3
+	// uiLogoScale is the scale for the big title-screen logo.
+	uiLogoScale = 5
+	uiMarginX   = 8
+	uiMarginY   = 8
+	uiIndent    = 4
+	uiLineGap   = 10 // matches font.Font's default line height
 
 	// storyWrapChars is the maximum rune count a story or ending line holds
 	// before it wraps to the next line.
 	storyWrapChars = 60
+
+	// fadeDuration is how long a scene fade takes to reveal the new scene,
+	// in seconds.
+	fadeDuration = 0.25
+
+	// captionDuration is how long an in-play caption stays on screen, in
+	// seconds.
+	captionDuration = 3.0
+	// introDuration is how long the level intro card stays up, in seconds.
+	introDuration = 4.0
+	// captionChaseThreshold is the chase level the caption layer watches
+	// cross to announce that Copycat is close.
+	captionChaseThreshold = 0.5
 )
 
 // UI colors, drawn behind and over the screen text.
@@ -66,12 +120,17 @@ const cameraPerspective = 0
 // pixels. It clears the window, draws the 3D corridor or boss arena while
 // playing or paused, then draws the matching screen text.
 func (u *UI) Draw(f *campaign.Flow, w, h int) {
+	dt := float64(rl.GetFrameTime())
+	u.anim += float32(dt)
+	u.advanceFade(f.Scene(), dt)
 	rl.ClearBackground(rlColor(uiBackground))
-	u.anim += rl.GetFrameTime()
 	switch f.Scene() {
 	case campaign.ScenePlay:
+		u.updateParticles(f, dt)
 		u.drawScene(f)
 		u.drawLines(HUDLines(f), w, h, false)
+		u.drawCaption(f, w, h, dt)
+		u.drawIntro(f, w, h, dt)
 	case campaign.ScenePause:
 		u.drawScene(f)
 		u.drawLines(MenuLines(f), w, h, true)
@@ -88,6 +147,215 @@ func (u *UI) Draw(f *campaign.Flow, w, h int) {
 		u.drawLines(StoryLines(f), w, h, true)
 	default:
 		u.drawLines(MenuLines(f), w, h, true)
+	}
+	u.drawFade(w, h, sceneBackdrop(f))
+}
+
+// captionOnChange compares the flow's current run or boss state with prev and
+// reports the one caption the transition earns, preferring life loss, then
+// stomp, snip, shield, chase and phase. It advances prev to the current state
+// and resets it when the run or boss pointer changes. The boss fight start
+// reports the first phase line.
+func captionOnChange(f *campaign.Flow, prev *captionSnap) (gameplay.Line, bool) {
+	r := f.Run()
+	b := f.Boss()
+
+	if r != prev.run || b != prev.boss {
+		prev.run = r
+		prev.boss = b
+		if b != nil {
+			prev.phase = b.Phase()
+			return gameplay.BossPhaseLines[0], true
+		}
+		if r == nil {
+			prev.livesLost = 0
+			prev.stomps = 0
+			prev.bald = false
+			prev.chase = 0
+			prev.shield = 0
+			prev.phase = 0
+			prev.prevAirborne = false
+			prev.prevTotalCombs = 0
+			return gameplay.Line{}, false
+		}
+		prev.livesLost = r.LivesLost
+		prev.stomps = r.Stomps
+		prev.bald = r.Bald
+		prev.chase = r.Chase
+		prev.shield = r.ShieldHits
+		prev.prevAirborne = r.Runner.Airborne()
+		prev.prevTotalCombs = r.TotalCombs
+		prev.phase = 0
+		return gameplay.Line{}, false
+	}
+
+	if b != nil {
+		if b.Phase() > prev.phase {
+			prev.phase = b.Phase()
+			return gameplay.BossPhaseLines[b.Phase()-1], true
+		}
+		prev.phase = b.Phase()
+		return gameplay.Line{}, false
+	}
+	if r == nil {
+		return gameplay.Line{}, false
+	}
+
+	line := gameplay.Line{}
+	ok := false
+	switch {
+	case r.LivesLost > prev.livesLost:
+		line, ok = gameplay.CauseLines[r.Cause], true
+	case r.Stomps > prev.stomps:
+		line, ok = gameplay.StompedMudskipper, true
+	case r.Bald && !prev.bald:
+		line, ok = gameplay.SnipLine, true
+	case r.ShieldHits < prev.shield:
+		line, ok = gameplay.ShieldLine, true
+	case r.Chase > captionChaseThreshold && prev.chase <= captionChaseThreshold:
+		line, ok = gameplay.ChaseLine, true
+	}
+
+	prev.livesLost = r.LivesLost
+	prev.stomps = r.Stomps
+	prev.bald = r.Bald
+	prev.chase = r.Chase
+	prev.shield = r.ShieldHits
+	prev.prevAirborne = r.Runner.Airborne()
+	prev.prevTotalCombs = r.TotalCombs
+	return line, ok
+}
+
+// updateParticles advances the live particles by dt and spawns new ones from
+// the run transitions the caption snapshot detects: a comb collected, a
+// landing, or a snip. It runs before drawCaption, so the snapshot's previous
+// counters still describe the frame being left behind.
+func (u *UI) updateParticles(f *campaign.Flow, dt float64) {
+	u.particles = stepParticles(u.particles, dt)
+	r := f.Run()
+	if r == nil {
+		u.particles = u.particles[:0]
+		return
+	}
+	if r != u.caption.run {
+		// A new run started. drawCaption resets the snapshot this method
+		// compares against, so drop the previous run's leftovers now.
+		u.particles = u.particles[:0]
+		return
+	}
+	pos := Vec3{X: f32(laneX(r.Runner.Lane())), Y: f32(r.Runner.Height()), Z: f32(r.Runner.Z())}
+	if r.TotalCombs > u.caption.prevTotalCombs {
+		u.particles = append(u.particles, spawnSparkle(pos)...)
+	}
+	if u.caption.prevAirborne && !r.Runner.Airborne() {
+		u.particles = append(u.particles, spawnDust(pos)...)
+	}
+	if r.Bald && !u.caption.bald {
+		u.particles = append(u.particles, spawnHair(pos)...)
+	}
+}
+
+// drawCaption reports one caption per state transition and draws the active
+// caption at the bottom of the screen while it lasts.
+func (u *UI) drawCaption(f *campaign.Flow, w, h int, dt float64) {
+	if f.Run() != u.caption.run || f.Boss() != u.caption.boss {
+		u.captionText = ""
+		u.captionLeft = 0
+	}
+	if line, ok := captionOnChange(f, &u.caption); ok {
+		u.captionText = hudText(f, line)
+		u.captionLeft = captionDuration
+	}
+	if u.captionLeft <= 0 {
+		return
+	}
+	u.drawBottomLines(storyWrap(u.captionText, 0, 0, uiLineGap), w, h)
+	u.captionLeft -= dt
+	if u.captionLeft < 0 {
+		u.captionLeft = 0
+	}
+}
+
+// drawIntro shows the level intro card while its timer lasts. The timer
+// restarts whenever the active run or boss fight changes.
+func (u *UI) drawIntro(f *campaign.Flow, w, h int, dt float64) {
+	r, b := f.Run(), f.Boss()
+	if r != u.introRun || b != u.introBoss {
+		u.introRun = r
+		u.introBoss = b
+		u.introLeft = introDuration
+	}
+	if u.introLeft <= 0 {
+		return
+	}
+	u.drawLines(introLines(f), w, h, true)
+	u.introLeft -= dt
+	if u.introLeft < 0 {
+		u.introLeft = 0
+	}
+}
+
+// introLines returns the level intro card: the level's name and one
+// deterministically chosen loading tip, plus the control hints on campaign
+// level 1. Endless runs use the endless name and pick the tip by the level's
+// seed.
+func introLines(f *campaign.Flow) []ScreenLine {
+	var name string
+	var tipIdx uint64
+	levelID := 0
+	if f.Endless() {
+		name = levelText(f, levelgen.EndlessName)
+		if r := f.Run(); r != nil {
+			tipIdx = r.Level.Seed()
+		}
+	} else if lv, ok := f.CurrentLevel(); ok {
+		name = textFor(f, campaign.LevelNames[lv.ID-1])
+		tipIdx = uint64(lv.ID)
+		levelID = lv.ID
+	} else {
+		return nil
+	}
+	lines := []ScreenLine{
+		uiLine(name, uiMarginX, uiMarginY, false),
+		uiLine(textFor(f, campaign.LoadingTips[tipIdx%uint64(len(campaign.LoadingTips))]), uiMarginX+uiIndent, uiMarginY+uiLineGap, false),
+	}
+	if levelID == 1 {
+		for i, hint := range campaign.KeyHints {
+			lines = append(lines, uiLine(textFor(f, hint), uiMarginX+uiIndent, uiMarginY+(i+2)*uiLineGap, false))
+		}
+	}
+	return lines
+}
+
+// levelText returns the levelgen line for the flow's language.
+func levelText(f *campaign.Flow, l levelgen.Line) string {
+	if f.Settings().Language == campaign.LanguageUkrainian {
+		return l.UA
+	}
+	return l.EN
+}
+
+// drawBottomLines draws lines anchored to the bottom center of the window,
+// used for the in-play captions so they never cover the top-anchored HUD.
+func (u *UI) drawBottomLines(lines []ScreenLine, w, h int) {
+	if len(lines) == 0 {
+		return
+	}
+	margin := u.scale
+	if margin < 1 {
+		margin = 1
+	}
+	ox := (w - u.blockWidth(lines)) / 2
+	if ox < 0 {
+		ox = 0
+	}
+	oy := h - u.blockHeight(lines) - uiMarginY*margin
+	if oy < 0 {
+		oy = 0
+	}
+	for _, l := range lines {
+		scale := lineScale(l)
+		u.drawLine(l, ox+l.X*scale, oy+l.Y*scale)
 	}
 }
 
@@ -155,15 +423,26 @@ func languagePickLines(f *campaign.Flow) []ScreenLine {
 }
 
 func mainMenuLines(f *campaign.Flow) []ScreenLine {
-	lines := []ScreenLine{uiLine(textFor(f, campaign.GameTitle), uiMarginX, uiMarginY, false)}
+	lines := []ScreenLine{{
+		Text:  textFor(f, campaign.GameTitle),
+		X:     uiMarginX,
+		Y:     uiMarginY,
+		Scale: uiLogoScale,
+	}}
+	// The tagline sits below the big logo and the menu items below the
+	// tagline, each offset by the previous line's scaled height so the larger
+	// logo never overlaps the text under it.
+	y := uiMarginY + uiLineGap*uiLogoScale
+	lines = append(lines, uiLine(textFor(f, campaign.TitleTagline), uiMarginX, y, false))
+	y += uiLineGap * uiScale
 	for i, item := range campaign.MainMenuItems {
-		lines = append(lines, uiLine(textFor(f, item), uiMarginX+uiIndent, uiMarginY+(i+1)*uiLineGap, i == f.MenuIndex()))
+		lines = append(lines, uiLine(textFor(f, item), uiMarginX+uiIndent, y+i*uiLineGap, i == f.MenuIndex()))
 	}
 	return lines
 }
 
 func mapLines(f *campaign.Flow) []ScreenLine {
-	lines := []ScreenLine{uiLine(textFor(f, campaign.MapTitle), uiMarginX, uiMarginY, false)}
+	lines := []ScreenLine{headingLine(textFor(f, campaign.MapTitle), uiMarginX, uiMarginY)}
 	for i, name := range campaign.LevelNames {
 		text := fmt.Sprintf("%2d. %s", i+1, textFor(f, name))
 		if i+1 > f.Progress().Unlocked {
@@ -182,7 +461,7 @@ func settingsLines(f *campaign.Flow) []ScreenLine {
 		onOffText(f, s.Fullscreen),
 		languageValueName(s.Language),
 	}
-	lines := []ScreenLine{uiLine(textFor(f, campaign.SettingsTitle), uiMarginX, uiMarginY, false)}
+	lines := []ScreenLine{headingLine(textFor(f, campaign.SettingsTitle), uiMarginX, uiMarginY)}
 	for i, label := range campaign.SettingsItems {
 		lines = append(lines, uiLine(fmt.Sprintf("%s: %s", textFor(f, label), values[i]), uiMarginX+uiIndent, uiMarginY+(i+1)*uiLineGap, i == f.MenuIndex()))
 	}
@@ -190,10 +469,14 @@ func settingsLines(f *campaign.Flow) []ScreenLine {
 }
 
 func pauseLines(f *campaign.Flow) []ScreenLine {
-	return []ScreenLine{
-		uiLine(textFor(f, campaign.PauseTitle), uiMarginX, uiMarginY, false),
+	lines := []ScreenLine{
+		headingLine(textFor(f, campaign.PauseTitle), uiMarginX, uiMarginY),
 		uiLine(textFor(f, campaign.PauseHint), uiMarginX+uiIndent, uiMarginY+uiLineGap, false),
 	}
+	for i, hint := range campaign.KeyHints {
+		lines = append(lines, uiLine(textFor(f, hint), uiMarginX+uiIndent, uiMarginY+(i+2)*uiLineGap, false))
+	}
+	return lines
 }
 
 func levelEndLines(f *campaign.Flow) []ScreenLine {
@@ -202,12 +485,22 @@ func levelEndLines(f *campaign.Flow) []ScreenLine {
 		title = campaign.EndlessLevelEndTitle
 	}
 	cause := gameplay.CauseNone
+	combs, livesLost, stomps := 0, 0, 0
 	if r := f.Run(); r != nil {
 		cause = r.Cause
+		combs = r.TotalCombs
+		livesLost = r.LivesLost
+		stomps = r.Stomps
 	}
-	lines := []ScreenLine{uiLine(textFor(f, title), uiMarginX, uiMarginY, false)}
+	lines := []ScreenLine{headingLine(textFor(f, title), uiMarginX, uiMarginY)}
 	lines = append(lines, uiLine(textFor(f, campaign.MedalsOfShame[cause]), uiMarginX+uiIndent, uiMarginY+uiLineGap, false))
 	y := uiMarginY + 2*uiLineGap
+	lines = append(lines, uiLine(fmt.Sprintf("%s: %d", textFor(f, campaign.LevelEndCombs), combs), uiMarginX+uiIndent, y, false))
+	y += uiLineGap
+	lines = append(lines, uiLine(fmt.Sprintf("%s: %d", textFor(f, campaign.LevelEndLivesLost), livesLost), uiMarginX+uiIndent, y, false))
+	y += uiLineGap
+	lines = append(lines, uiLine(fmt.Sprintf("%s: %d", textFor(f, campaign.LevelEndStomps), stomps), uiMarginX+uiIndent, y, false))
+	y += uiLineGap
 	if f.Endless() {
 		if r := f.Run(); r != nil {
 			lines = append(lines, uiLine(fmt.Sprintf("%s: %.0f m", hudText(f, gameplay.HUDDistance), r.Runner.Z()), uiMarginX+uiIndent, y, false))
@@ -226,7 +519,7 @@ func gameOverLines(f *campaign.Flow) []ScreenLine {
 		cause = r.Cause
 	}
 	lines := []ScreenLine{
-		uiLine(textFor(f, campaign.GameOverTitle), uiMarginX, uiMarginY, false),
+		headingLine(textFor(f, campaign.GameOverTitle), uiMarginX, uiMarginY),
 		uiLine(textFor(f, campaign.Epitaphs[cause]), uiMarginX+uiIndent, uiMarginY+uiLineGap, false),
 	}
 	for i, item := range campaign.GameOverItems {
@@ -266,8 +559,25 @@ func creditsLines(f *campaign.Flow) []ScreenLine {
 	return lines
 }
 
+// uiLine returns a body-scaled ScreenLine.
 func uiLine(text string, x, y int, highlighted bool) ScreenLine {
-	return ScreenLine{Text: text, X: x, Y: y, Highlighted: highlighted}
+	return ScreenLine{Text: text, X: x, Y: y, Scale: uiScale, Highlighted: highlighted}
+}
+
+// headingLine returns a screen heading at the heading scale.
+func headingLine(text string, x, y int) ScreenLine {
+	l := uiLine(text, x, y, false)
+	l.Scale = uiHeadingScale
+	return l
+}
+
+// lineScale returns the line's scale, clamped to at least one so text never
+// collapses to zero size.
+func lineScale(l ScreenLine) int {
+	if l.Scale < 1 {
+		return 1
+	}
+	return l.Scale
 }
 
 func textFor(f *campaign.Flow, l campaign.Line) string {
@@ -362,11 +672,13 @@ func (u *UI) drawScene(f *campaign.Flow) {
 	defer rl.EndMode3D()
 
 	if b := f.Boss(); b != nil {
-		DrawCmds(BuildBossArena(Cam{Lane: float64(b.HeroLane()), Z: 0, Height: 0}))
+		cs := BuildBossArena(Cam{Lane: float64(b.HeroLane()), Z: 0, Height: 0})
+		DrawCmds(FogCmds(cs, bossDark, float64(cam.Position.Z)))
 		heroPos := Vec3{X: f32(laneX(float64(b.HeroLane()))), Y: 0, Z: 0}
-		u.drawModelAt(BuildHero(PoseRun, false), heroPos)
+		u.drawModelAt(BuildHero(bossHeroPose(b), false), heroPos)
 		bossPos := Vec3{X: f32(laneX(float64(b.AttackLane()))), Y: 0, Z: 8}
 		u.drawModelAt(BuildBoss(b.Phase(), b.Vulnerable()), bossPos)
+		DrawCmds(telegraphCmds(b))
 		return
 	}
 
@@ -375,12 +687,29 @@ func (u *UI) drawScene(f *campaign.Flow) {
 		return
 	}
 	theme := runTheme(f)
+	pal := Palette(theme)
 	cam3 := Cam{Lane: r.Runner.Lane(), Z: r.Runner.Z(), Height: r.Runner.Height()}
-	DrawCmds(BuildWorld(r.Level, theme, cam3))
+	cs := BuildWorld(r.Level, theme, cam3)
+	DrawCmds(FogCmds(cs, pal.Backdrop, float64(cam.Position.Z)))
 	pos := Vec3{X: f32(laneX(r.Runner.Lane())), Y: f32(r.Runner.Height()), Z: f32(r.Runner.Z())}
 	u.drawModelAt(BuildHero(heroPoseFor(r), r.Bald), pos)
-	chase := 2 + r.Chase*3
+	chase := copycatChase(r.Chase)
 	u.drawModelAt(BuildCopycat(chase), Vec3{X: pos.X, Y: 0, Z: pos.Z})
+	u.drawParticles()
+}
+
+// drawParticles draws the live particles as small primitives after the world
+// and hero, reusing a scratch command list so the hot path never allocates.
+func (u *UI) drawParticles() {
+	u.particleCmds = u.particleCmds[:0]
+	for _, p := range u.particles {
+		size := Size{X: p.Size, Y: p.Size, Z: p.Size}
+		if p.Shape == ShapeSphere {
+			size = Size{X: p.Size}
+		}
+		u.particleCmds = append(u.particleCmds, Cmd{Shape: p.Shape, Pos: p.Pos, Size: size, Color: p.Color})
+	}
+	DrawCmds(u.particleCmds)
 }
 
 func (u *UI) cameraFor(f *campaign.Flow) rl.Camera3D {
@@ -430,10 +759,102 @@ func runTheme(f *campaign.Flow) campaign.Theme {
 }
 
 func heroPoseFor(r *gameplay.Run) HeroPose {
-	if r.Runner.Height() > 0.05 {
+	if r.Runner.Slamming() {
+		return PoseSlam
+	}
+	if r.Runner.Sliding() {
+		return PoseSlide
+	}
+	if r.Runner.Airborne() {
 		return PoseJump
 	}
 	return PoseRun
+}
+
+// copycatChase returns how far behind the hero, in meters, Copycat runs at
+// chase. chase runs from 0 (far, off-screen) to 1 (right behind), so a higher
+// chase means a smaller gap.
+func copycatChase(chase float64) float64 {
+	if chase < 0 {
+		chase = 0
+	}
+	if chase > 1 {
+		chase = 1
+	}
+	return 2 + (1-chase)*7
+}
+
+// bossHeroPose maps the boss fight's hero moves to a pose. The boss hero has
+// no slam, so a jump, a slide or the run covers every state.
+func bossHeroPose(b *gameplay.BossFight) HeroPose {
+	if b.Jumping() {
+		return PoseJump
+	}
+	if b.Sliding() {
+		return PoseSlide
+	}
+	return PoseRun
+}
+
+// telegraphCmds returns the arena overlay warning which lane Copycat will
+// attack and whether the attack comes low or high. A low attack marks the
+// floor to be jumped; a high attack marks a raised plane to be slid under.
+// While Copycat is vulnerable it returns nil: the crouch alone marks the
+// stomp window.
+func telegraphCmds(b *gameplay.BossFight) []Cmd {
+	if b.Vulnerable() {
+		return nil
+	}
+	x := laneX(float64(b.AttackLane()))
+	y := 0.02
+	if b.AttackKind() == gameplay.AttackHigh {
+		y = 1.2
+	}
+	return []Cmd{{
+		Shape: ShapePlane,
+		Pos:   v3(x, y, 0),
+		Size:  Size{X: 1.9, Z: 1.9},
+		Color: bossTelegraph,
+	}}
+}
+
+// sceneBackdrop returns the color the fade overlay blends a scene toward: the
+// themed backdrop behind a run, the salon dark behind the boss, or the flat
+// UI background on the 2D screens.
+func sceneBackdrop(f *campaign.Flow) Color {
+	if f.Scene() == campaign.ScenePlay || f.Scene() == campaign.ScenePause {
+		if f.Boss() != nil {
+			return bossDark
+		}
+		return Palette(runTheme(f)).Backdrop
+	}
+	return uiBackground
+}
+
+// advanceFade moves the scene fade by dt seconds. When scene changes it
+// covers the screen and then fades out over fadeDuration, revealing the new
+// scene from its backdrop color.
+func (u *UI) advanceFade(scene campaign.Scene, dt float64) {
+	if !u.fadeStarted || scene != u.fadeScene {
+		u.fadeStarted = true
+		u.fadeScene = scene
+		u.fadeCover = 1
+		return
+	}
+	u.fadeCover -= dt / fadeDuration
+	if u.fadeCover < 0 {
+		u.fadeCover = 0
+	}
+}
+
+// drawFade draws the full-screen scene fade overlay. cover = 1 hides the
+// scene behind back; cover = 0 draws nothing.
+func (u *UI) drawFade(w, h int, back Color) {
+	if u.fadeCover <= 0 {
+		return
+	}
+	back.A = uint8(math.Round(255 * u.fadeCover))
+	rl.DrawRectangle(0, 0, int32(w), int32(h), rlColor(back))
 }
 
 // drawLines lays out and draws the screen lines. center centers the block in
@@ -442,14 +863,10 @@ func (u *UI) drawLines(lines []ScreenLine, w, h int, center bool) {
 	if len(lines) == 0 {
 		return
 	}
-	scale := u.scale
-	if scale < 1 {
-		scale = 1
-	}
 	ox, oy := 0, 0
 	if center {
-		ox = (w - u.blockWidth(lines)*scale) / 2
-		oy = (h - u.blockHeight(lines)*scale) / 2
+		ox = (w - u.blockWidth(lines)) / 2
+		oy = (h - u.blockHeight(lines)) / 2
 		if ox < 0 {
 			ox = 0
 		}
@@ -458,66 +875,74 @@ func (u *UI) drawLines(lines []ScreenLine, w, h int, center bool) {
 		}
 	}
 	for _, l := range lines {
+		scale := lineScale(l)
 		u.drawLine(l, ox+l.X*scale, oy+l.Y*scale)
 	}
 }
 
+// blockWidth returns the block's scaled pixel width, honoring each line's own
+// scale so centered blocks fit the window.
 func (u *UI) blockWidth(lines []ScreenLine) int {
 	width := 0
 	for _, l := range lines {
 		w, _ := u.fnt.Measure(l.Text)
-		if l.X+w > width {
-			width = l.X + w
+		scale := lineScale(l)
+		if l.X*scale+w*scale > width {
+			width = l.X*scale + w*scale
 		}
 	}
 	return width
 }
 
+// blockHeight returns the block's scaled pixel height, honoring each line's
+// own scale so centered blocks fit the window.
 func (u *UI) blockHeight(lines []ScreenLine) int {
 	height := 0
 	for _, l := range lines {
-		if l.Y+u.fnt.LineHeight() > height {
-			height = l.Y + u.fnt.LineHeight()
+		scale := lineScale(l)
+		if l.Y*scale+u.fnt.LineHeight()*scale > height {
+			height = l.Y*scale + u.fnt.LineHeight()*scale
 		}
 	}
 	return height
 }
 
 func (u *UI) drawLine(l ScreenLine, x, y int) {
+	scale := lineScale(l)
 	col := rlColor(uiTextColor)
 	if l.Highlighted {
 		col = rlColor(uiHighlightText)
 		w, _ := u.fnt.Measure(l.Text)
 		rl.DrawRectangle(
-			int32(x-2*u.scale),
-			int32(y-u.scale),
-			int32(w*u.scale+4*u.scale),
-			int32(u.fnt.LineHeight()*u.scale+2*u.scale),
+			int32(x-2*scale),
+			int32(y-scale),
+			int32(w*scale+4*scale),
+			int32(u.fnt.LineHeight()*scale+2*scale),
 			rlColor(uiHighlightBar),
 		)
 	}
 	for _, r := range l.Text {
 		g, ok := u.fnt.Glyph(r)
 		if !ok {
-			x += u.fnt.SpaceWidth() * u.scale
+			x += u.fnt.SpaceWidth() * scale
 			continue
 		}
-		u.drawGlyph(g, x, y, col)
-		x += g.Advance * u.scale
+		u.drawGlyph(g, x, y, scale, col)
+		x += g.Advance * scale
 	}
 }
 
-func (u *UI) drawGlyph(g font.Glyph, x, y int, col rl.Color) {
+func (u *UI) drawGlyph(g font.Glyph, x, y, scale int, col rl.Color) {
 	for row := 0; row < g.Height; row++ {
 		for colIdx := 0; colIdx < g.Width; colIdx++ {
 			if !g.Pixels[row*g.Width+colIdx] {
 				continue
 			}
 			rl.DrawRectangle(
-				int32(x+colIdx*u.scale),
-				int32(y+row*u.scale),
-				int32(u.scale),
-				int32(u.scale),
+				int32(x+colIdx*scale),
+				int32(y+row*scale),
+				int32(scale),
+				int32(scale),
 				col,
 			)
 		}

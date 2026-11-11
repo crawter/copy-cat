@@ -5,6 +5,8 @@
 package render
 
 import (
+	"math"
+
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
@@ -71,6 +73,24 @@ type Cam struct {
 // position only at the edge.
 func v3(x, y, z float64) Vec3 {
 	return Vec3{X: float32(x), Y: float32(y), Z: float32(z)}
+}
+
+// LerpColor returns the color partway from a to b by t, clamped to [0, 1]:
+// t=0 returns a unchanged and t=1 returns b unchanged. It is the shared lerp
+// the fog and scene fade use to blend colors toward a backdrop.
+func LerpColor(a, b Color, t float64) Color {
+	if t < 0 {
+		t = 0
+	}
+	if t > 1 {
+		t = 1
+	}
+	return Color{
+		R: uint8(math.Round(float64(a.R) + (float64(b.R)-float64(a.R))*t)),
+		G: uint8(math.Round(float64(a.G) + (float64(b.G)-float64(a.G))*t)),
+		B: uint8(math.Round(float64(a.B) + (float64(b.B)-float64(a.B))*t)),
+		A: uint8(math.Round(float64(a.A) + (float64(b.A)-float64(a.A))*t)),
+	}
 }
 
 // DrawCmds draws cs with raylib primitives in list order.
