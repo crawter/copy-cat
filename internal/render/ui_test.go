@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -363,6 +364,66 @@ func TestLevelEndShowsStats(t *testing.T) {
 	}
 }
 
+func TestHeroPoseForMapsRunnerStates(t *testing.T) {
+	cases := []struct {
+		name                                 string
+		slamming, sliding, airborne, landing bool
+		speed                                float64
+		want                                 HeroPose
+	}{
+		{name: "run", speed: 8, want: PoseRun},
+		{name: "sprint threshold", speed: 12, want: PoseSprint},
+		{name: "sprint", speed: 16, want: PoseSprint},
+		{name: "jump", airborne: true, speed: 8, want: PoseJump},
+		{name: "slide", sliding: true, speed: 8, want: PoseSlide},
+		{name: "slam", slamming: true, airborne: true, speed: 8, want: PoseStomp},
+		{name: "landing", landing: true, speed: 8, want: PoseLanding},
+	}
+	for _, tc := range cases {
+		if got := heroPoseFor(tc.slamming, tc.sliding, tc.airborne, tc.landing, tc.speed); got != tc.want {
+			t.Fatalf("%s: pose = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestBuildBossTelegraphHighlightsAnnouncedLane(t *testing.T) {
+	b := gameplay.NewBossFight(3)
+	b.Step(runner.Input{}, testDT) // announce the first attack
+	if b.Vulnerable() {
+		t.Fatal("boss became vulnerable before announcing an attack")
+	}
+	cs := BuildBossTelegraph(b)
+	if len(cs) == 0 {
+		t.Fatal("no telegraph commands after announcement")
+	}
+	wantX := laneX(float64(b.AttackLane()))
+	for _, c := range cs {
+		if c.Shape != ShapePlane {
+			t.Fatalf("telegraph uses non-plane shape %v", c.Shape)
+		}
+		if math.Abs(float64(c.Pos.X)-wantX) > 0.01 {
+			t.Fatalf("telegraph x = %v, want lane %d x %v", c.Pos.X, b.AttackLane(), wantX)
+		}
+	}
+}
+
+func TestBuildBossTelegraphNilWhenNoTelegraph(t *testing.T) {
+	if got := BuildBossTelegraph(nil); got != nil {
+		t.Fatalf("nil boss telegraph = %v, want nil", got)
+	}
+
+	b := gameplay.NewBossFight(3)
+	for i := 0; i < 200 && !b.Vulnerable(); i++ {
+		b.Step(runner.Input{}, testDT)
+	}
+	if !b.Vulnerable() {
+		t.Fatal("boss never became vulnerable")
+	}
+	if got := BuildBossTelegraph(b); got != nil {
+		t.Fatalf("vulnerable boss telegraph = %v, want nil", got)
+	}
+}
+
 func TestLandingBurstFiresOnLandingNotOnStomp(t *testing.T) {
 	f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
 	pos := Vec3{}
@@ -456,6 +517,85 @@ func assertStompDoesNotFireLanding(t *testing.T, f *campaign.Flow) {
 		}
 	}
 	t.Fatal("no airborne enemy stomp found within 100 seeds")
+}
+
+func TestTransitionsIncludeFadeSlideZoom(t *testing.T) {
+	kinds := transitionKinds()
+	got := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		got[k] = true
+	}
+	for _, want := range []string{"fade", "slide", "zoom"} {
+		if !got[want] {
+			t.Fatalf("transition kinds %v missing %q", kinds, want)
+		}
+	}
+}
+
+func TestSlideAndZoomSettle(t *testing.T) {
+	x, y := slideOffset(0, sceneTransitionDuration)
+	if x <= 0 {
+		t.Fatalf("slide at start = %d, want a visible entry offset", x)
+	}
+	if y != 0 {
+		t.Fatalf("slide y at start = %d, want 0", y)
+	}
+	if z := zoomScale(0, sceneTransitionDuration); z <= 1 {
+		t.Fatalf("zoom at start = %v, want > 1", z)
+	}
+
+	x, y = slideOffset(sceneTransitionDuration, sceneTransitionDuration)
+	if x != 0 || y != 0 {
+		t.Fatalf("slide after settle = (%d, %d), want (0, 0)", x, y)
+	}
+	if z := zoomScale(sceneTransitionDuration, sceneTransitionDuration); math.Abs(z-1) > 1e-9 {
+		t.Fatalf("zoom after settle = %v, want 1", z)
+	}
+}
+
+func TestRunOverlaysSpawnStompCheckpointAndSlideBursts(t *testing.T) {
+	f := campaign.NewFlow(campaign.Default(), campaign.DefaultSettings(), campaign.NewProgress(), false)
+	flat := levelgen.New(1, levelgen.Params{BaseSpeed: 8, Length: 30})
+	run := gameplay.NewRun(runner.New(flat, runner.DefaultConfig()), flat, 3)
+	u := NewUI(font.New())
+
+	u.updateRunOverlays(f, run, Vec3{}) // baseline
+	run.Stomps++
+	run.CheckpointZ = 5
+	u.updateRunOverlays(f, run, Vec3{})
+
+	if !hasBurst(u, BuildStompBurst()) {
+		t.Fatal("stomp burst not spawned on stomp")
+	}
+	if !hasBurst(u, BuildCheckpointShine()) {
+		t.Fatal("checkpoint shine not spawned on checkpoint change")
+	}
+
+	run.Step(runner.Input{Slide: true}, testDT)
+	u.updateRunOverlays(f, run, Vec3{})
+	if !run.Runner.Sliding() {
+		t.Fatal("hero did not start sliding")
+	}
+	if !hasBurst(u, BuildSlideSparks()) {
+		t.Fatal("slide sparks not spawned on slide")
+	}
+}
+
+func TestBossOverlaysSpawnHitBurst(t *testing.T) {
+	b := gameplay.NewBossFight(3)
+	u := NewUI(font.New())
+	u.updateBossOverlays(b, Vec3{})
+
+	for i := 0; i < 120 && b.Lives() == 3; i++ {
+		b.Step(runner.Input{}, testDT)
+	}
+	if b.Lives() == 3 {
+		t.Fatal("boss never landed a hit")
+	}
+	u.updateBossOverlays(b, Vec3{})
+	if !hasBurst(u, BuildBossHitBurst()) {
+		t.Fatal("boss hit burst not spawned on boss hit")
+	}
 }
 
 func TestPauseLinesEntriesAndHighlight(t *testing.T) {

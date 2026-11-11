@@ -7,7 +7,10 @@ import (
 	"copycat/internal/campaign"
 )
 
-var heroPoses = []HeroPose{PoseIdle, PoseRun, PoseJump, PoseSlide, PoseSlam}
+var heroPoses = []HeroPose{
+	PoseIdle, PoseRun, PoseJump, PoseSlide, PoseSlam,
+	PoseLanding, PoseStomp, PoseSprint,
+}
 
 var heroParts = []struct {
 	name  string
@@ -99,6 +102,51 @@ func TestBuildHeroAtAnimatesRun(t *testing.T) {
 	}
 }
 
+func TestNewHeroPosesDifferAndKeepParts(t *testing.T) {
+	newPoses := []HeroPose{PoseLanding, PoseStomp, PoseSprint}
+	models := make(map[HeroPose][]Cmd, len(newPoses))
+	for _, pose := range newPoses {
+		cs := BuildHero(pose, false)
+		models[pose] = cs
+		for _, part := range heroParts {
+			if !cmdsHaveColor(cs, part.color) {
+				t.Fatalf("pose %v: %s part missing", pose, part.name)
+			}
+		}
+	}
+	for i := 0; i < len(newPoses); i++ {
+		for j := i + 1; j < len(newPoses); j++ {
+			if reflect.DeepEqual(models[newPoses[i]], models[newPoses[j]]) {
+				t.Fatalf("poses %v and %v produce identical models", newPoses[i], newPoses[j])
+			}
+		}
+	}
+	for _, pose := range newPoses {
+		for _, existing := range heroPoses {
+			if existing == pose {
+				continue
+			}
+			if reflect.DeepEqual(models[pose], BuildHero(existing, false)) {
+				t.Fatalf("pose %v produces the same model as pose %v", pose, existing)
+			}
+		}
+	}
+}
+
+func TestBuildHeroAtAnimatesIdleAndSprint(t *testing.T) {
+	for _, pose := range []HeroPose{PoseIdle, PoseSprint} {
+		a := BuildHeroAt(pose, false, 0)
+		b := BuildHeroAt(pose, false, 0.125)
+		c := BuildHeroAt(pose, false, 0.25)
+		if reflect.DeepEqual(a, b) || reflect.DeepEqual(a, c) || reflect.DeepEqual(b, c) {
+			t.Fatalf("pose %v does not animate over time", pose)
+		}
+		if !reflect.DeepEqual(a, BuildHero(pose, false)) {
+			t.Fatalf("BuildHero does not match the first animation frame for %v", pose)
+		}
+	}
+}
+
 func TestBuildEnemyCoversAllSpecies(t *testing.T) {
 	cases := []struct {
 		theme campaign.Theme
@@ -146,6 +194,25 @@ func TestBuildCopycatChaseDistanceMovesBehind(t *testing.T) {
 	}
 }
 
+func TestBuildCopycatWindupDiffersFromIdleAndAnimates(t *testing.T) {
+	idle := BuildCopycat(2)
+	if !reflect.DeepEqual(idle, BuildCopycatAt(2, CopycatPoseIdle, 0)) {
+		t.Fatal("idle CopycatAt does not match BuildCopycat")
+	}
+
+	windup := BuildCopycatAt(2, CopycatPoseWindup, 0)
+	if reflect.DeepEqual(idle, windup) {
+		t.Fatal("wind-up Copycat stance matches idle")
+	}
+	peak := BuildCopycatAt(2, CopycatPoseWindup, 0.5)
+	if reflect.DeepEqual(windup, peak) {
+		t.Fatal("wind-up Copycat does not animate over time")
+	}
+	if !reflect.DeepEqual(BuildCopycatAt(2, CopycatPoseWindup, 1), windup) {
+		t.Fatal("wind-up phase does not wrap")
+	}
+}
+
 func TestBuildBossDiffersAcrossPhasesAndVulnerability(t *testing.T) {
 	p1 := BuildBoss(1, false)
 	p2 := BuildBoss(2, false)
@@ -168,19 +235,52 @@ func TestBuildBossDiffersAcrossPhasesAndVulnerability(t *testing.T) {
 	}
 }
 
+func TestBuildBossPosesDifferFromIdleAndAnimate(t *testing.T) {
+	idle := BuildBoss(1, false)
+	if !reflect.DeepEqual(idle, BuildBossAt(1, false, BossStanceIdle, 0)) {
+		t.Fatal("idle BuildBossAt does not match BuildBoss")
+	}
+
+	windup := BuildBossAt(1, false, BossStanceWindup, 0)
+	jump := BuildBossAt(1, false, BossStanceJump, 0)
+	if reflect.DeepEqual(idle, windup) {
+		t.Fatal("boss wind-up stance matches idle")
+	}
+	if reflect.DeepEqual(idle, jump) {
+		t.Fatal("boss jump stance matches idle")
+	}
+	if reflect.DeepEqual(windup, jump) {
+		t.Fatal("boss wind-up and jump stances are identical")
+	}
+
+	windupLater := BuildBossAt(1, false, BossStanceWindup, 0.25)
+	jumpLater := BuildBossAt(1, false, BossStanceJump, 0.25)
+	if reflect.DeepEqual(windup, windupLater) {
+		t.Fatal("boss wind-up stance does not animate over time")
+	}
+	if reflect.DeepEqual(jump, jumpLater) {
+		t.Fatal("boss jump stance does not animate over time")
+	}
+}
+
 func TestModelsUseOnlyPrimitiveShapes(t *testing.T) {
 	lists := [][]Cmd{
 		BuildHero(PoseRun, false),
 		BuildHero(PoseSlide, true),
 		BuildHeroAt(PoseRun, false, 0.25),
+		BuildHeroAt(PoseIdle, false, 0.25),
+		BuildHeroAt(PoseSprint, false, 0.25),
 		BuildEnemy(campaign.ThemeMangroves, Vec3{Z: 0}),
 		BuildEnemy(campaign.ThemeHarbor, Vec3{Z: 0}),
 		BuildEnemy(campaign.ThemeHarbor, Vec3{Z: 1}),
 		BuildEnemy(campaign.ThemeNeon, Vec3{Z: 0}),
 		BuildEnemy(campaign.ThemeNeon, Vec3{Z: 1}),
 		BuildCopycat(3),
+		BuildCopycatAt(3, CopycatPoseWindup, 0.25),
 		BuildBoss(1, false),
 		BuildBoss(3, true),
+		BuildBossAt(1, false, BossStanceWindup, 0.25),
+		BuildBossAt(1, false, BossStanceJump, 0.25),
 	}
 	for i, cs := range lists {
 		if len(cs) == 0 {

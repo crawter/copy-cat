@@ -2,6 +2,7 @@ package render
 
 import (
 	"math"
+	"reflect"
 	"testing"
 
 	"copycat/internal/campaign"
@@ -42,6 +43,29 @@ func TestBuildWorldIncludesCorridor(t *testing.T) {
 	}
 	if walls < 2 {
 		t.Fatalf("want 2 walls, got %d", walls)
+	}
+}
+
+func TestBuildWorldIncludesSkyGradientAndPattern(t *testing.T) {
+	l := levelgen.New(1, levelgen.Mangroves())
+	for _, theme := range []campaign.Theme{campaign.ThemeMangroves, campaign.ThemeHarbor, campaign.ThemeNeon} {
+		pal := Palette(theme)
+		cs := BuildWorld(l, theme, Cam{Lane: 1, Z: 40, Height: 0})
+		for _, col := range []Color{pal.Sky, pal.Gradient, pal.FloorPattern, pal.Light, pal.Shade} {
+			if !cmdsHaveColor(cs, col) {
+				t.Fatalf("%v world missing color %+v", theme, col)
+			}
+		}
+	}
+}
+
+func TestBuildWorldAtAnimatesProps(t *testing.T) {
+	l := levelgen.New(1, levelgen.Mangroves())
+	cam := Cam{Lane: 1, Z: 40, Height: 0}
+	a := BuildWorldAt(l, campaign.ThemeMangroves, cam, 0)
+	b := BuildWorldAt(l, campaign.ThemeMangroves, cam, 0.35)
+	if reflect.DeepEqual(a, b) {
+		t.Fatal("prop animation did not change the world between two times")
 	}
 }
 

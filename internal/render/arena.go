@@ -85,6 +85,16 @@ func BuildArenaTelegraph(lane int, kind gameplay.AttackKind) []Cmd {
 	}}
 }
 
+// BuildBossTelegraph returns the draw list highlighting the lane Copycat has
+// currently announced for attack. It draws nothing during a vulnerable
+// window, when Copycat crouches instead of telegraphing a swipe.
+func BuildBossTelegraph(b *gameplay.BossFight) []Cmd {
+	if b == nil || b.Vulnerable() {
+		return nil
+	}
+	return BuildArenaTelegraph(b.AttackLane(), b.AttackKind())
+}
+
 func barberChairCmds(x, z float64) []Cmd {
 	return []Cmd{
 		{Shape: ShapeCylinder, Pos: v3(x, 0.25, z), Size: Size{X: 0.3, Y: 0.5}, Color: bossChair},
