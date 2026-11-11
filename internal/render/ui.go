@@ -15,10 +15,12 @@ import (
 )
 
 // ScreenLine is one line of UI text: what it says, where it sits in the
-// unscaled screen layout, and whether the menu cursor highlights it.
+// unscaled screen layout, at what scale it is drawn, and whether the menu
+// cursor highlights it.
 type ScreenLine struct {
 	Text        string
 	X, Y        int
+	Scale       int
 	Highlighted bool
 }
 
@@ -40,6 +42,9 @@ type UI struct {
 	introRun  *gameplay.Run
 	introBoss *gameplay.BossFight
 	introLeft float64
+
+	particles    []Particle
+	particleCmds []Cmd
 }
 
 // NewUI returns a UI that draws its text with fnt. The font is read-only and
@@ -48,8 +53,9 @@ func NewUI(fnt *font.Font) *UI {
 	return &UI{fnt: fnt, scale: uiScale}
 }
 
-// captionSnap holds the previous run or boss counters the caption layer
-// compares against, so each state transition earns exactly one caption.
+// captionSnap holds the previous run or boss counters the caption layer and
+// the particle layer compare against, so each state transition earns exactly
+// one caption and one particle burst.
 type captionSnap struct {
 	run  *gameplay.Run
 	boss *gameplay.BossFight
@@ -60,16 +66,24 @@ type captionSnap struct {
 	chase     float64
 	shield    int
 	phase     int
+
+	prevAirborne   bool // previous airborne state, to spawn landing dust
+	prevTotalCombs int  // previous total combs, to spawn comb sparkles
 }
 
 // The screen layout is described in the font's unscaled pixel grid; Draw
 // scales it to the window.
 const (
-	uiScale   = 2
-	uiMarginX = 8
-	uiMarginY = 8
-	uiIndent  = 4
-	uiLineGap = 10 // matches font.Font's default line height
+	// uiScale is the scale for body text and menu items.
+	uiScale = 2
+	// uiHeadingScale is the scale for screen headings.
+	uiHeadingScale = 3
+	// uiLogoScale is the scale for the big title-screen logo.
+	uiLogoScale = 5
+	uiMarginX   = 8
+	uiMarginY   = 8
+	uiIndent    = 4
+	uiLineGap   = 10 // matches font.Font's default line height
 
 	// storyWrapChars is the maximum rune count a story or ending line holds
 	// before it wraps to the next line.
@@ -112,6 +126,7 @@ func (u *UI) Draw(f *campaign.Flow, w, h int) {
 	rl.ClearBackground(rlColor(uiBackground))
 	switch f.Scene() {
 	case campaign.ScenePlay:
+		u.updateParticles(f, dt)
 		u.drawScene(f)
 		u.drawLines(HUDLines(f), w, h, false)
 		u.drawCaption(f, w, h, dt)
@@ -159,6 +174,8 @@ func captionOnChange(f *campaign.Flow, prev *captionSnap) (gameplay.Line, bool) 
 			prev.chase = 0
 			prev.shield = 0
 			prev.phase = 0
+			prev.prevAirborne = false
+			prev.prevTotalCombs = 0
 			return gameplay.Line{}, false
 		}
 		prev.livesLost = r.LivesLost
@@ -166,6 +183,8 @@ func captionOnChange(f *campaign.Flow, prev *captionSnap) (gameplay.Line, bool) 
 		prev.bald = r.Bald
 		prev.chase = r.Chase
 		prev.shield = r.ShieldHits
+		prev.prevAirborne = r.Runner.Airborne()
+		prev.prevTotalCombs = r.TotalCombs
 		prev.phase = 0
 		return gameplay.Line{}, false
 	}
@@ -202,7 +221,38 @@ func captionOnChange(f *campaign.Flow, prev *captionSnap) (gameplay.Line, bool) 
 	prev.bald = r.Bald
 	prev.chase = r.Chase
 	prev.shield = r.ShieldHits
+	prev.prevAirborne = r.Runner.Airborne()
+	prev.prevTotalCombs = r.TotalCombs
 	return line, ok
+}
+
+// updateParticles advances the live particles by dt and spawns new ones from
+// the run transitions the caption snapshot detects: a comb collected, a
+// landing, or a snip. It runs before drawCaption, so the snapshot's previous
+// counters still describe the frame being left behind.
+func (u *UI) updateParticles(f *campaign.Flow, dt float64) {
+	u.particles = stepParticles(u.particles, dt)
+	r := f.Run()
+	if r == nil {
+		u.particles = u.particles[:0]
+		return
+	}
+	if r != u.caption.run {
+		// A new run started. drawCaption resets the snapshot this method
+		// compares against, so drop the previous run's leftovers now.
+		u.particles = u.particles[:0]
+		return
+	}
+	pos := Vec3{X: f32(laneX(r.Runner.Lane())), Y: f32(r.Runner.Height()), Z: f32(r.Runner.Z())}
+	if r.TotalCombs > u.caption.prevTotalCombs {
+		u.particles = append(u.particles, spawnSparkle(pos)...)
+	}
+	if u.caption.prevAirborne && !r.Runner.Airborne() {
+		u.particles = append(u.particles, spawnDust(pos)...)
+	}
+	if r.Bald && !u.caption.bald {
+		u.particles = append(u.particles, spawnHair(pos)...)
+	}
 }
 
 // drawCaption reports one caption per state transition and draws the active
@@ -291,19 +341,20 @@ func (u *UI) drawBottomLines(lines []ScreenLine, w, h int) {
 	if len(lines) == 0 {
 		return
 	}
-	scale := u.scale
-	if scale < 1 {
-		scale = 1
+	margin := u.scale
+	if margin < 1 {
+		margin = 1
 	}
-	ox := (w - u.blockWidth(lines)*scale) / 2
+	ox := (w - u.blockWidth(lines)) / 2
 	if ox < 0 {
 		ox = 0
 	}
-	oy := h - u.blockHeight(lines)*scale - uiMarginY*scale
+	oy := h - u.blockHeight(lines) - uiMarginY*margin
 	if oy < 0 {
 		oy = 0
 	}
 	for _, l := range lines {
+		scale := lineScale(l)
 		u.drawLine(l, ox+l.X*scale, oy+l.Y*scale)
 	}
 }
@@ -372,15 +423,26 @@ func languagePickLines(f *campaign.Flow) []ScreenLine {
 }
 
 func mainMenuLines(f *campaign.Flow) []ScreenLine {
-	lines := []ScreenLine{uiLine(textFor(f, campaign.GameTitle), uiMarginX, uiMarginY, false)}
+	lines := []ScreenLine{{
+		Text:  textFor(f, campaign.GameTitle),
+		X:     uiMarginX,
+		Y:     uiMarginY,
+		Scale: uiLogoScale,
+	}}
+	// The tagline sits below the big logo and the menu items below the
+	// tagline, each offset by the previous line's scaled height so the larger
+	// logo never overlaps the text under it.
+	y := uiMarginY + uiLineGap*uiLogoScale
+	lines = append(lines, uiLine(textFor(f, campaign.TitleTagline), uiMarginX, y, false))
+	y += uiLineGap * uiScale
 	for i, item := range campaign.MainMenuItems {
-		lines = append(lines, uiLine(textFor(f, item), uiMarginX+uiIndent, uiMarginY+(i+1)*uiLineGap, i == f.MenuIndex()))
+		lines = append(lines, uiLine(textFor(f, item), uiMarginX+uiIndent, y+i*uiLineGap, i == f.MenuIndex()))
 	}
 	return lines
 }
 
 func mapLines(f *campaign.Flow) []ScreenLine {
-	lines := []ScreenLine{uiLine(textFor(f, campaign.MapTitle), uiMarginX, uiMarginY, false)}
+	lines := []ScreenLine{headingLine(textFor(f, campaign.MapTitle), uiMarginX, uiMarginY)}
 	for i, name := range campaign.LevelNames {
 		text := fmt.Sprintf("%2d. %s", i+1, textFor(f, name))
 		if i+1 > f.Progress().Unlocked {
@@ -399,7 +461,7 @@ func settingsLines(f *campaign.Flow) []ScreenLine {
 		onOffText(f, s.Fullscreen),
 		languageValueName(s.Language),
 	}
-	lines := []ScreenLine{uiLine(textFor(f, campaign.SettingsTitle), uiMarginX, uiMarginY, false)}
+	lines := []ScreenLine{headingLine(textFor(f, campaign.SettingsTitle), uiMarginX, uiMarginY)}
 	for i, label := range campaign.SettingsItems {
 		lines = append(lines, uiLine(fmt.Sprintf("%s: %s", textFor(f, label), values[i]), uiMarginX+uiIndent, uiMarginY+(i+1)*uiLineGap, i == f.MenuIndex()))
 	}
@@ -408,7 +470,7 @@ func settingsLines(f *campaign.Flow) []ScreenLine {
 
 func pauseLines(f *campaign.Flow) []ScreenLine {
 	lines := []ScreenLine{
-		uiLine(textFor(f, campaign.PauseTitle), uiMarginX, uiMarginY, false),
+		headingLine(textFor(f, campaign.PauseTitle), uiMarginX, uiMarginY),
 		uiLine(textFor(f, campaign.PauseHint), uiMarginX+uiIndent, uiMarginY+uiLineGap, false),
 	}
 	for i, hint := range campaign.KeyHints {
@@ -430,7 +492,7 @@ func levelEndLines(f *campaign.Flow) []ScreenLine {
 		livesLost = r.LivesLost
 		stomps = r.Stomps
 	}
-	lines := []ScreenLine{uiLine(textFor(f, title), uiMarginX, uiMarginY, false)}
+	lines := []ScreenLine{headingLine(textFor(f, title), uiMarginX, uiMarginY)}
 	lines = append(lines, uiLine(textFor(f, campaign.MedalsOfShame[cause]), uiMarginX+uiIndent, uiMarginY+uiLineGap, false))
 	y := uiMarginY + 2*uiLineGap
 	lines = append(lines, uiLine(fmt.Sprintf("%s: %d", textFor(f, campaign.LevelEndCombs), combs), uiMarginX+uiIndent, y, false))
@@ -457,7 +519,7 @@ func gameOverLines(f *campaign.Flow) []ScreenLine {
 		cause = r.Cause
 	}
 	lines := []ScreenLine{
-		uiLine(textFor(f, campaign.GameOverTitle), uiMarginX, uiMarginY, false),
+		headingLine(textFor(f, campaign.GameOverTitle), uiMarginX, uiMarginY),
 		uiLine(textFor(f, campaign.Epitaphs[cause]), uiMarginX+uiIndent, uiMarginY+uiLineGap, false),
 	}
 	for i, item := range campaign.GameOverItems {
@@ -497,8 +559,25 @@ func creditsLines(f *campaign.Flow) []ScreenLine {
 	return lines
 }
 
+// uiLine returns a body-scaled ScreenLine.
 func uiLine(text string, x, y int, highlighted bool) ScreenLine {
-	return ScreenLine{Text: text, X: x, Y: y, Highlighted: highlighted}
+	return ScreenLine{Text: text, X: x, Y: y, Scale: uiScale, Highlighted: highlighted}
+}
+
+// headingLine returns a screen heading at the heading scale.
+func headingLine(text string, x, y int) ScreenLine {
+	l := uiLine(text, x, y, false)
+	l.Scale = uiHeadingScale
+	return l
+}
+
+// lineScale returns the line's scale, clamped to at least one so text never
+// collapses to zero size.
+func lineScale(l ScreenLine) int {
+	if l.Scale < 1 {
+		return 1
+	}
+	return l.Scale
 }
 
 func textFor(f *campaign.Flow, l campaign.Line) string {
@@ -616,6 +695,21 @@ func (u *UI) drawScene(f *campaign.Flow) {
 	u.drawModelAt(BuildHero(heroPoseFor(r), r.Bald), pos)
 	chase := copycatChase(r.Chase)
 	u.drawModelAt(BuildCopycat(chase), Vec3{X: pos.X, Y: 0, Z: pos.Z})
+	u.drawParticles()
+}
+
+// drawParticles draws the live particles as small primitives after the world
+// and hero, reusing a scratch command list so the hot path never allocates.
+func (u *UI) drawParticles() {
+	u.particleCmds = u.particleCmds[:0]
+	for _, p := range u.particles {
+		size := Size{X: p.Size, Y: p.Size, Z: p.Size}
+		if p.Shape == ShapeSphere {
+			size = Size{X: p.Size}
+		}
+		u.particleCmds = append(u.particleCmds, Cmd{Shape: p.Shape, Pos: p.Pos, Size: size, Color: p.Color})
+	}
+	DrawCmds(u.particleCmds)
 }
 
 func (u *UI) cameraFor(f *campaign.Flow) rl.Camera3D {
@@ -769,14 +863,10 @@ func (u *UI) drawLines(lines []ScreenLine, w, h int, center bool) {
 	if len(lines) == 0 {
 		return
 	}
-	scale := u.scale
-	if scale < 1 {
-		scale = 1
-	}
 	ox, oy := 0, 0
 	if center {
-		ox = (w - u.blockWidth(lines)*scale) / 2
-		oy = (h - u.blockHeight(lines)*scale) / 2
+		ox = (w - u.blockWidth(lines)) / 2
+		oy = (h - u.blockHeight(lines)) / 2
 		if ox < 0 {
 			ox = 0
 		}
@@ -785,66 +875,74 @@ func (u *UI) drawLines(lines []ScreenLine, w, h int, center bool) {
 		}
 	}
 	for _, l := range lines {
+		scale := lineScale(l)
 		u.drawLine(l, ox+l.X*scale, oy+l.Y*scale)
 	}
 }
 
+// blockWidth returns the block's scaled pixel width, honoring each line's own
+// scale so centered blocks fit the window.
 func (u *UI) blockWidth(lines []ScreenLine) int {
 	width := 0
 	for _, l := range lines {
 		w, _ := u.fnt.Measure(l.Text)
-		if l.X+w > width {
-			width = l.X + w
+		scale := lineScale(l)
+		if l.X*scale+w*scale > width {
+			width = l.X*scale + w*scale
 		}
 	}
 	return width
 }
 
+// blockHeight returns the block's scaled pixel height, honoring each line's
+// own scale so centered blocks fit the window.
 func (u *UI) blockHeight(lines []ScreenLine) int {
 	height := 0
 	for _, l := range lines {
-		if l.Y+u.fnt.LineHeight() > height {
-			height = l.Y + u.fnt.LineHeight()
+		scale := lineScale(l)
+		if l.Y*scale+u.fnt.LineHeight()*scale > height {
+			height = l.Y*scale + u.fnt.LineHeight()*scale
 		}
 	}
 	return height
 }
 
 func (u *UI) drawLine(l ScreenLine, x, y int) {
+	scale := lineScale(l)
 	col := rlColor(uiTextColor)
 	if l.Highlighted {
 		col = rlColor(uiHighlightText)
 		w, _ := u.fnt.Measure(l.Text)
 		rl.DrawRectangle(
-			int32(x-2*u.scale),
-			int32(y-u.scale),
-			int32(w*u.scale+4*u.scale),
-			int32(u.fnt.LineHeight()*u.scale+2*u.scale),
+			int32(x-2*scale),
+			int32(y-scale),
+			int32(w*scale+4*scale),
+			int32(u.fnt.LineHeight()*scale+2*scale),
 			rlColor(uiHighlightBar),
 		)
 	}
 	for _, r := range l.Text {
 		g, ok := u.fnt.Glyph(r)
 		if !ok {
-			x += u.fnt.SpaceWidth() * u.scale
+			x += u.fnt.SpaceWidth() * scale
 			continue
 		}
-		u.drawGlyph(g, x, y, col)
-		x += g.Advance * u.scale
+		u.drawGlyph(g, x, y, scale, col)
+		x += g.Advance * scale
 	}
 }
 
-func (u *UI) drawGlyph(g font.Glyph, x, y int, col rl.Color) {
+func (u *UI) drawGlyph(g font.Glyph, x, y, scale int, col rl.Color) {
 	for row := 0; row < g.Height; row++ {
 		for colIdx := 0; colIdx < g.Width; colIdx++ {
 			if !g.Pixels[row*g.Width+colIdx] {
 				continue
 			}
 			rl.DrawRectangle(
-				int32(x+colIdx*u.scale),
-				int32(y+row*u.scale),
-				int32(u.scale),
-				int32(u.scale),
+				int32(x+colIdx*scale),
+				int32(y+row*scale),
+				int32(scale),
+				int32(scale),
 				col,
 			)
 		}
