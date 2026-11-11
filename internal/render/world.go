@@ -39,6 +39,22 @@ const (
 	// starts and where it fully reaches the backdrop color.
 	fogNear = 6.0
 	fogFar  = 38.0
+
+	// The backdrop above the corridor is drawn as three stacked bands: the
+	// horizon-colored wall backdrop, a gradient band, and the open sky.
+	backdropBandHeight = 6.0
+	gradientBandHeight = 6.0
+	skyBandHeight      = 14.0
+	backdropCenter     = wallHeight + backdropBandHeight/2
+	gradientCenter     = wallHeight + backdropBandHeight + gradientBandHeight/2
+	skyCenter          = wallHeight + backdropBandHeight + gradientBandHeight + skyBandHeight/2
+
+	// Prop animation tuning.
+	propSwaySpeed     = 1.4
+	propSwayPhase     = 0.45
+	propSwayAmplitude = 0.25
+	neonFlickerSpeed  = 10.0
+	neonFlickerPhase  = 0.7
 )
 
 // laneX returns the x offset, in meters, of a lane index in [0, 2].
@@ -64,16 +80,25 @@ func DrawWorld(l *levelgen.Level, theme campaign.Theme, cam Cam) {
 	DrawCmds(BuildWorld(l, theme, cam))
 }
 
-// BuildWorld returns the draw list for a corridor slice around cam. It draws
-// three lane strips, side walls, a themed backdrop and, for each element
-// inside the draw distance, its themed primitive. Everything farther than
-// drawAhead ahead of or drawBehind behind the camera is culled.
+// BuildWorld returns the draw list for a corridor slice around cam at the
+// first animation frame. It draws three lane strips, side walls, a themed
+// sky, gradient and horizon backdrop, lighting and, for each element inside
+// the draw distance, its themed primitive. Everything farther than drawAhead
+// ahead of or drawBehind behind the camera is culled.
 func BuildWorld(l *levelgen.Level, theme campaign.Theme, cam Cam) []Cmd {
+	return BuildWorldAt(l, theme, cam, 0)
+}
+
+// BuildWorldAt returns the draw list for a corridor slice around cam at
+// animation clock t in seconds. t drives the animated props: mangrove sway,
+// neon flicker and the other per-theme world motion.
+func BuildWorldAt(l *levelgen.Level, theme campaign.Theme, cam Cam, t float64) []Cmd {
 	b := worldBuilder{
 		level: l,
 		theme: theme,
 		pal:   Palette(theme),
 		cam:   cam,
+		t:     t,
 	}
 	return b.build()
 }
@@ -110,14 +135,16 @@ type worldBuilder struct {
 	theme campaign.Theme
 	pal   ThemePalette
 	cam   Cam
+	t     float64
 	cmds  []Cmd
 }
 
 func (b *worldBuilder) build() []Cmd {
-	b.cmds = make([]Cmd, 0, 256)
+	b.cmds = make([]Cmd, 0, 320)
 	b.addBackdrop()
 	b.addFloor()
 	b.addWalls()
+	b.addLighting()
 	for _, e := range b.elementsInWindow() {
 		b.addElement(e)
 	}
@@ -173,12 +200,12 @@ func (b *worldBuilder) addBackdrop() {
 	}
 	mid := (start + end) / 2
 	length := end - start
-	b.cmds = append(b.cmds, Cmd{
-		Shape: ShapeBox,
-		Pos:   v3(0, wallHeight+3, mid),
-		Size:  Size{X: corridorHalf*2 + 20, Y: 6, Z: length},
-		Color: b.pal.Backdrop,
-	})
+	width := corridorHalf*2 + 20
+	b.cmds = append(b.cmds,
+		Cmd{Shape: ShapeBox, Pos: v3(0, backdropCenter, mid), Size: Size{X: width, Y: backdropBandHeight, Z: length}, Color: b.pal.Backdrop},
+		Cmd{Shape: ShapeBox, Pos: v3(0, gradientCenter, mid), Size: Size{X: width, Y: gradientBandHeight, Z: length}, Color: b.pal.Gradient},
+		Cmd{Shape: ShapeBox, Pos: v3(0, skyCenter, mid), Size: Size{X: width, Y: skyBandHeight, Z: length}, Color: b.pal.Sky},
+	)
 	b.addThemeProps(start, end)
 }
 
@@ -190,26 +217,55 @@ func (b *worldBuilder) addThemeProps(start, end float64) {
 
 func (b *worldBuilder) addThemePropPair(z float64) {
 	inner := corridorHalf - 0.3
+	sway := propSway(b.t, z)
 	switch b.theme {
 	case campaign.ThemeHarbor:
 		for _, x := range []float64{-inner, inner} {
 			b.cmds = append(b.cmds,
 				Cmd{Shape: ShapeBox, Pos: v3(x, 0.5, z), Size: Size{X: 1, Y: 1, Z: 1}, Color: b.pal.Ramp},
 				Cmd{Shape: ShapeBox, Pos: v3(x, 1.5, z), Size: Size{X: 1, Y: 1, Z: 1}, Color: b.pal.RampTop},
+				Cmd{Shape: ShapeSphere, Pos: v3(x, 2.15, z), Size: Size{X: 0.22}, Color: b.pal.Accent},
+				Cmd{Shape: ShapePlane, Pos: v3(x, 0.05, z - 0.7), Size: Size{X: 0.9, Z: 0.5}, Color: b.pal.Light},
 			)
 		}
 	case campaign.ThemeNeon:
 		for _, x := range []float64{-inner, inner} {
+			col := blendColor(b.pal.Accent, b.pal.Wall, neonFlicker(b.t, z))
 			b.cmds = append(b.cmds,
-				Cmd{Shape: ShapeBox, Pos: v3(x, 2, z), Size: Size{X: 0.2, Y: 2.5, Z: 0.4}, Color: b.pal.Accent},
+				Cmd{Shape: ShapeBox, Pos: v3(x+sway, 2, z), Size: Size{X: 0.2, Y: 2.5, Z: 0.4}, Color: col},
+				Cmd{Shape: ShapeSphere, Pos: v3(x, 3.35, z), Size: Size{X: 0.12}, Color: b.pal.Light},
 			)
 		}
 	default: // ThemeMangroves and any unknown theme.
 		for _, x := range []float64{-inner, inner} {
 			b.cmds = append(b.cmds,
-				Cmd{Shape: ShapeCylinder, Pos: v3(x, 2.5, z), Size: Size{X: 0.25, Y: 5}, Color: b.pal.LowBarrier},
+				Cmd{Shape: ShapeCylinder, Pos: v3(x+sway, 2.5, z), Size: Size{X: 0.25, Y: 5}, Color: b.pal.LowBarrier},
+				Cmd{Shape: ShapeSphere, Pos: v3(x+sway, 5.2, z), Size: Size{X: 0.6}, Color: b.pal.Accent},
 			)
 		}
+	}
+}
+
+// propSway returns the horizontal sway of an animated prop at z for animation
+// clock t: a smooth, world-space offset shared by the prop pair at z.
+func propSway(t, z float64) float64 {
+	return math.Sin(t*propSwaySpeed+z*propSwayPhase) * propSwayAmplitude
+}
+
+// neonFlicker returns how much a neon prop at z dims at animation clock t:
+// 0 is fully lit, 1 is fully off. It steps through a fast, irregular-looking
+// flicker rather than a smooth fade.
+func neonFlicker(t, z float64) float64 {
+	v := math.Sin(t*neonFlickerSpeed + z*neonFlickerPhase)
+	switch {
+	case v < -0.35:
+		return 0.75
+	case v < 0.25:
+		return 0.4
+	case v < 0.65:
+		return 0.0
+	default:
+		return 0.2
 	}
 }
 
@@ -223,11 +279,9 @@ func (b *worldBuilder) addFloor() {
 		}
 		mid := (z + t1) / 2
 		if !overlapsAnyPit(pits, z, t1) {
+			tile := int(math.Floor(z / floorTileLen))
 			for lane := 0; lane < 3; lane++ {
-				col := b.pal.Floor
-				if lane == 1 {
-					col = b.pal.FloorAlt
-				}
+				col := floorColor(b.pal, lane, tile)
 				b.cmds = append(b.cmds, Cmd{
 					Shape: ShapeBox,
 					Pos:   v3(laneX(float64(lane)), -floorThickness/2, mid),
@@ -237,6 +291,26 @@ func (b *worldBuilder) addFloor() {
 			}
 		}
 		z = t1
+	}
+}
+
+// floorColor returns the floor color for lane in the zero-based tile whose
+// index is tile. The two outer lanes alternate to paint a checkered pattern,
+// while the center lane keeps its guiding alt color.
+func floorColor(pal ThemePalette, lane, tile int) Color {
+	switch lane {
+	case 1:
+		return pal.FloorAlt
+	case 0:
+		if tile%2 == 0 {
+			return pal.Floor
+		}
+		return pal.FloorPattern
+	default:
+		if tile%2 == 0 {
+			return pal.FloorPattern
+		}
+		return pal.Floor
 	}
 }
 
@@ -281,6 +355,35 @@ func (b *worldBuilder) addWalls() {
 			Pos:   v3(x, wallHeight/2, mid),
 			Size:  Size{X: wallThickness, Y: wallHeight, Z: length},
 			Color: b.pal.Wall,
+		})
+	}
+}
+
+// addLighting paints the fake lighting/shading: a bright ceiling strip above
+// the run and shade strips along the base of each wall.
+func (b *worldBuilder) addLighting() {
+	start, end := b.window()
+	if end <= start {
+		return
+	}
+	mid := (start + end) / 2
+	length := end - start
+	b.cmds = append(b.cmds, Cmd{
+		Shape: ShapeBox,
+		Pos:   v3(0, wallHeight-0.12, mid),
+		Size:  Size{X: corridorHalf*2 - 1.0, Y: 0.15, Z: length},
+		Color: b.pal.Light,
+	})
+	for _, x := range []float64{-corridorHalf, corridorHalf} {
+		dir := 1.0
+		if x < 0 {
+			dir = -1.0
+		}
+		b.cmds = append(b.cmds, Cmd{
+			Shape: ShapeBox,
+			Pos:   v3(x-dir*(wallThickness/2+0.35), 0.35, mid),
+			Size:  Size{X: 0.4, Y: 0.7, Z: length},
+			Color: b.pal.Shade,
 		})
 	}
 }
